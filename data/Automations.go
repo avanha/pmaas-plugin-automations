@@ -26,7 +26,11 @@ type Automation struct {
 
 	LastRun time.Time
 
-	// Outcome is "succeeded", "failed", "gave up", "missed", or "not yet"; OutcomeClass is the same as a word safe
+	// CanRearm is that Re-enable would do something: the time it was last due is dealt with and still worth running
+	// for.
+	CanRearm bool
+
+	// Outcome is "succeeded", "failed", "gave up", "missed", "waiting", "condition not met" or "not yet"; OutcomeClass is the same as a word safe
 	// to use as a style, and Manual is that the last run was by hand.
 	Outcome      string
 	OutcomeClass string

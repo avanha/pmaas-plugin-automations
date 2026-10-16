@@ -49,3 +49,28 @@ func (a *automationStoreAdapter) RunNow(id string) (common.RunResult, error) {
 		Error:     result.event.Error,
 	}, nil
 }
+
+type rearmResult struct {
+	armed bool
+	why   string
+	err   error
+}
+
+func (a *automationStoreAdapter) Rearm(id string) (common.RearmResult, error) {
+	resultCh := make(chan rearmResult, 1)
+
+	err := a.parent.container.EnqueueOnServerGoRoutine([]func(){func() {
+		armed, why, rearmErr := a.parent.rearm(id)
+		resultCh <- rearmResult{armed: armed, why: why, err: rearmErr}
+	}})
+	if err != nil {
+		return common.RearmResult{}, errors.New("the server is not accepting requests")
+	}
+
+	result := <-resultCh
+	if result.err != nil {
+		return common.RearmResult{}, result.err
+	}
+
+	return common.RearmResult{Armed: result.armed, Why: result.why}, nil
+}

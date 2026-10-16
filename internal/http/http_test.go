@@ -130,12 +130,20 @@ func TestTemplate_EscapesEverythingThatIsText(t *testing.T) {
 }
 
 type fakeStore struct {
-	ran    []string
-	result common.RunResult
-	err    error
+	ran     []string
+	rearmed []string
+	result  common.RunResult
+	rearm   common.RearmResult
+	err     error
 }
 
 func (s *fakeStore) GetAutomations() (data.Automations, error) { return data.Automations{}, s.err }
+
+func (s *fakeStore) Rearm(id string) (common.RearmResult, error) {
+	s.rearmed = append(s.rearmed, id)
+
+	return s.rearm, s.err
+}
 
 func (s *fakeStore) RunNow(id string) (common.RunResult, error) {
 	s.ran = append(s.ran, id)
@@ -239,4 +247,83 @@ func TestWords(t *testing.T) {
 	if got := untilTime(time.Now().Add(-time.Hour)); got != "now" {
 		t.Errorf("a time that has passed: %q", got)
 	}
+}
+
+func TestTemplate_WaitingShowsWhyAndOnlyAnAutomationThatCanBeReenabledGetsTheButton(t *testing.T) {
+	waiting := item("Fan")
+	waiting.Outcome, waiting.OutcomeClass, waiting.Message = "waiting", "waiting", "78.1°F is not below 75.0°F"
+
+	done := item("Lights")
+	done.CanRearm = true
+
+	out := render(t, data.Automations{Items: []data.Automation{waiting, done}})
+
+	for _, want := range []string{`outcome-badge waiting">waiting`, "78.1°F is not below 75.0°F", `automation waiting`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	if got := strings.Count(out, `class="rearm-button"`); got != 1 {
+		t.Errorf("%d re-enable buttons, want 1:\n%s", got, out)
+	}
+
+	if !strings.Contains(out, `class="rearm-button" data-id="id-Lights"`) {
+		t.Errorf("the button is not on the automation that can be re-enabled:\n%s", out)
+	}
+}
+
+func TestRearmRequest(t *testing.T) {
+	post := &http.Request{Method: http.MethodPost}
+
+	t.Run("re-enables it and says so", func(t *testing.T) {
+		store := &fakeStore{rearm: common.RearmResult{Armed: true}}
+		h := &Handler{store: store}
+
+		response, err := h.handleHttpRearmRequest(nil, post, &runRequest{ID: "fan"})
+		if err != nil || !response.(rearmResponse).Armed {
+			t.Fatalf("response %+v, err %v", response, err)
+		}
+
+		if len(store.rearmed) != 1 || store.rearmed[0] != "fan" {
+			t.Errorf("rearmed %v", store.rearmed)
+		}
+	})
+
+	t.Run("not being able to is a response with the reason, not an error", func(t *testing.T) {
+		h := &Handler{store: &fakeStore{rearm: common.RearmResult{Why: "its time has passed"}}}
+
+		response, err := h.handleHttpRearmRequest(nil, post, &runRequest{ID: "fan"})
+		if err != nil || response.(rearmResponse).Armed || response.(rearmResponse).Why != "its time has passed" {
+			t.Errorf("response %+v, err %v", response, err)
+		}
+	})
+
+	t.Run("only POST, and an ID", func(t *testing.T) {
+		store := &fakeStore{}
+		h := &Handler{store: store}
+
+		if _, err := h.handleHttpRearmRequest(nil, &http.Request{Method: http.MethodGet}, &runRequest{ID: "fan"}); err == nil {
+			t.Error("a GET was accepted")
+		}
+
+		for _, body := range []any{&runRequest{}, nil, "x"} {
+			if _, err := h.handleHttpRearmRequest(nil, post, body); err == nil {
+				t.Errorf("%v was accepted", body)
+			}
+		}
+
+		if len(store.rearmed) != 0 {
+			t.Error("a rejected request still re-enabled something")
+		}
+	})
+
+	t.Run("what went wrong inside is not told to the browser", func(t *testing.T) {
+		h := &Handler{store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
+
+		_, err := h.handleHttpRearmRequest(nil, post, &runRequest{ID: "fan"})
+		if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "/var") {
+			t.Errorf("error %v", err)
+		}
+	})
 }

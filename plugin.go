@@ -155,6 +155,28 @@ func (p *plugin) runNow(id string) (schedule.Event, error) {
 	return event, nil
 }
 
+// rearm makes an automation run again for the time it was last due, if that is still worth doing, and looks at it at
+// once. Runs on the server's goroutine.
+func (p *plugin) rearm(id string) (bool, string, error) {
+	if p.stopping.Load() {
+		return false, "", errors.New("the server is stopping")
+	}
+
+	now := p.now()
+
+	armed, why, err := p.schedule.Rearm(id, now)
+	if err != nil || !armed {
+		return false, why, err
+	}
+
+	// Looked at now rather than at the next minute, so that the page the person is looking at is right when they
+	// reload it. What is kept has changed, whether or not it runs.
+	events, _ := p.schedule.Evaluate(now, now)
+	p.publish(now, events, true)
+
+	return true, "", nil
+}
+
 // publish hands the plugin's goroutine a copy of how the schedule stands. Runs on the server's goroutine. The states
 // are handed over only when there is something new to keep.
 func (p *plugin) publish(now time.Time, events []schedule.Event, changed bool) {
@@ -214,6 +236,13 @@ func (p *plugin) report(event schedule.Event) {
 	case schedule.OutcomeMissed:
 		fmt.Printf("%T missed %q, which was due at %s, too long ago to run now\n",
 			p, event.Name, event.Due.Format("2006-01-02 3:04 PM"))
+	case schedule.OutcomeExpired:
+		// It was waiting for something that didn't happen. That's not a failure, so it isn't an alert.
+		fmt.Printf("%T %q never had anything to do for %s, since it was waiting: %s\n",
+			p, event.Name, event.Due.Format("2006-01-02 3:04 PM"), event.Message)
+	case schedule.OutcomeWaiting:
+		// Only a run by hand is reported: the waiting that is asked about every minute is not news.
+		fmt.Printf("%T %q%s is not ready: %s\n", p, event.Name, how, event.Message)
 	}
 }
 
@@ -288,20 +317,10 @@ func persistedState(s schedule.State) config.AutomationStateV1 {
 }
 
 func stateOf(s config.AutomationStateV1) schedule.State {
-	outcome := schedule.OutcomeNone
-
-	for _, candidate := range []schedule.Outcome{
-		schedule.OutcomeSucceeded, schedule.OutcomeFailed, schedule.OutcomeGaveUp, schedule.OutcomeMissed,
-	} {
-		if candidate.String() == s.Outcome {
-			outcome = candidate
-		}
-	}
-
 	return schedule.State{
 		LastDue:  s.LastDue,
 		LastRun:  s.LastRun,
-		Outcome:  outcome,
+		Outcome:  schedule.ParseOutcome(s.Outcome),
 		Manual:   s.Manual,
 		Message:  s.Message,
 		Error:    s.Error,
@@ -335,6 +354,7 @@ func viewOf(s schedule.Status) data.Automation {
 		Next:         s.Next,
 		HasNext:      s.HasNext,
 		LastRun:      s.LastRun,
+		CanRearm:     s.CanRearm,
 		Outcome:      s.Outcome.String(),
 		OutcomeClass: outcomeClass(s.Outcome),
 		Manual:       s.Manual,
@@ -354,6 +374,10 @@ func outcomeClass(o schedule.Outcome) string {
 		return "gave-up"
 	case schedule.OutcomeMissed:
 		return "missed"
+	case schedule.OutcomeWaiting:
+		return "waiting"
+	case schedule.OutcomeExpired:
+		return "expired"
 	default:
 		return "none"
 	}

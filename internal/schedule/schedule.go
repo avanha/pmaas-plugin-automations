@@ -29,6 +29,13 @@ const (
 
 	// OutcomeMissed is that its catch-up had passed before it could be tried, because the server was not running.
 	OutcomeMissed
+
+	// OutcomeWaiting is that it is due, but has said it is not ready, and is asked again every minute. The
+	// reason it gave is the State's Message.
+	OutcomeWaiting
+
+	// OutcomeExpired is that it was waiting when its catch-up passed: it never had anything to do.
+	OutcomeExpired
 )
 
 func (o Outcome) String() string {
@@ -41,9 +48,26 @@ func (o Outcome) String() string {
 		return "gave up"
 	case OutcomeMissed:
 		return "missed"
+	case OutcomeWaiting:
+		return "waiting"
+	case OutcomeExpired:
+		return "condition not met"
 	default:
 		return "not yet"
 	}
+}
+
+// ParseOutcome is the outcome that String gives the word for. Any word it doesn't know is OutcomeNone.
+func ParseOutcome(word string) Outcome {
+	for _, outcome := range []Outcome{
+		OutcomeSucceeded, OutcomeFailed, OutcomeGaveUp, OutcomeMissed, OutcomeWaiting, OutcomeExpired,
+	} {
+		if outcome.String() == word {
+			return outcome
+		}
+	}
+
+	return OutcomeNone
 }
 
 // State is what is known of one automation's history. It is what is kept across restarts.
@@ -94,6 +118,10 @@ type Status struct {
 	Next    time.Time
 	HasNext bool
 
+	// CanRearm is that the time it was last due is dealt with but its catch-up has not passed, so Rearm can make it
+	// run for that time again.
+	CanRearm bool
+
 	State
 }
 
@@ -103,6 +131,11 @@ type entry struct {
 
 	// seen is that the entry has been looked at once, which sets LastDue for an automation that has no history.
 	seen bool
+
+	// waitingFor is the latest time the automation was due that it waited to act on. It isn't kept across a restart: a
+	// time it was waiting for before then is, afterwards, one that was missed. Only a time that is waited for and then
+	// runs out matches it, since a time that is acted on or given up on is not looked at again.
+	waitingFor time.Time
 }
 
 // Schedule runs a set of automations.
@@ -192,8 +225,11 @@ func (s *Schedule) Evaluate(now time.Time, wall time.Time) (events []Event, chan
 			continue
 		}
 
-		events = append(events, e.run(due, wall, false))
-		changed = true
+		event, news := e.run(due, wall, false)
+		if news {
+			events = append(events, event)
+			changed = true
+		}
 	}
 
 	return events, changed
@@ -202,11 +238,15 @@ func (s *Schedule) Evaluate(now time.Time, wall time.Time) (events []Event, chan
 // tooLate deals with a time the automation was due that is further back than its catch-up.
 func (e *entry) tooLate(due time.Time) Event {
 	outcome := OutcomeMissed
-	if e.Attempts > 0 {
+
+	switch {
+	case e.Attempts > 0:
 		outcome = OutcomeGaveUp
+	case e.waitingFor.Equal(due):
+		outcome = OutcomeExpired
 	}
 
-	// What it last failed with stays, to say why it gave up.
+	// What it last failed with, or last said it was waiting for, stays, to say why it gave up or expired.
 	if outcome == OutcomeMissed {
 		e.Message, e.Error = "", ""
 	}
@@ -225,15 +265,66 @@ func (s *Schedule) RunNow(id string, wall time.Time) (Event, error) {
 		return Event{}, fmt.Errorf("there is no automation %q", id)
 	}
 
-	return e.run(time.Time{}, wall, true), nil
+	event, _ := e.run(time.Time{}, wall, true)
+
+	return event, nil
 }
 
-// run runs the automation for the time it was due, which is zero for a run by hand.
-func (e *entry) run(due time.Time, wall time.Time, manual bool) Event {
+// Rearm makes an automation run again for the time it was last due, when it has already dealt with it and its catch-up
+// has not passed: someone took the matter into their own hands, say, and wants it back in the automation's. It reports
+// whether it did, and if not, why not.
+func (s *Schedule) Rearm(id string, now time.Time) (bool, string, error) {
+	e, ok := s.byID[id]
+	if !ok {
+		return false, "", fmt.Errorf("there is no automation %q", id)
+	}
+
+	now = now.Truncate(time.Minute)
+
+	due, ok := e.Trigger().Previous(now)
+	if !ok {
+		return false, "it has not been due yet", nil
+	}
+
+	if due.After(e.LastDue) {
+		return false, "it is already due, and will run at the next minute", nil
+	}
+
+	if now.Sub(due) > e.CatchUp() {
+		if next, hasNext := e.Trigger().Next(now); hasNext {
+			return false, fmt.Sprintf("its time has passed, and it is next due at %s", next.Format("Mon 2006-01-02 3:04 PM")), nil
+		}
+
+		return false, "its time has passed", nil
+	}
+
+	// Just before the time it was due, so that it is due again. It can't have been failing or have an error to clear:
+	// that is only while it is due, which is refused above.
+	e.LastDue = due.Add(-time.Nanosecond)
+	e.Outcome, e.Manual, e.Message = OutcomeWaiting, false, "re-enabled"
+
+	return true, "", nil
+}
+
+// run runs the automation for the time it was due, which is zero for a run by hand. The event is what became of it,
+// and news is whether that is worth telling anyone: an automation that is waiting is asked again every minute, and
+// that, repeated, is not.
+func (e *entry) run(due time.Time, wall time.Time, manual bool) (event Event, news bool) {
 	message, err := e.Run()
 
 	e.LastRun = wall
 	e.Manual = manual
+
+	if reason, notReady := automation.NotReadyReason(err); notReady {
+		e.Outcome, e.Message, e.Error, e.Attempts = OutcomeWaiting, reason, "", 0
+
+		if !manual {
+			e.waitingFor = due
+		}
+
+		return e.event(due, 0), manual
+	}
+
 	e.Message = message
 
 	if err == nil {
@@ -243,7 +334,7 @@ func (e *entry) run(due time.Time, wall time.Time, manual bool) Event {
 			e.LastDue, e.Attempts = due, 0
 		}
 
-		return e.event(due, 0)
+		return e.event(due, 0), true
 	}
 
 	e.Outcome, e.Error = OutcomeFailed, err.Error()
@@ -252,7 +343,7 @@ func (e *entry) run(due time.Time, wall time.Time, manual bool) Event {
 		e.Attempts++
 	}
 
-	return e.event(due, e.Attempts)
+	return e.event(due, e.Attempts), true
 }
 
 func (e *entry) event(due time.Time, attempts int) Event {
@@ -275,6 +366,10 @@ func (s *Schedule) Statuses(now time.Time) []Status {
 	for i, e := range s.entries {
 		next, hasNext := e.Trigger().Next(now)
 
+		// The time it was last due, if it is dealt with and not too long ago for it to be worth running now.
+		due, wasDue := e.Trigger().Previous(now)
+		canRearm := wasDue && !due.After(e.LastDue) && now.Truncate(time.Minute).Sub(due) <= e.CatchUp()
+
 		statuses[i] = Status{
 			ID:          e.ID(),
 			Name:        e.Name(),
@@ -283,6 +378,7 @@ func (s *Schedule) Statuses(now time.Time) []Status {
 			CatchUp:     e.CatchUp(),
 			Next:        next,
 			HasNext:     hasNext,
+			CanRearm:    canRearm,
 			State:       e.State,
 		}
 	}

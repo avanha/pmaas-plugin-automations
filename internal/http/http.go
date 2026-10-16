@@ -53,6 +53,10 @@ func (h *Handler) Init(container spi.IPMAASContainer, store common.AutomationSto
 		"run",
 		func() any { return &runRequest{} },
 		h.handleHttpRunRequest)
+	container.AddJsonRoute(
+		"rearm",
+		func() any { return &runRequest{} },
+		h.handleHttpRearmRequest)
 	container.RegisterEntityRenderer(
 		reflect.TypeOf((*data.Automations)(nil)).Elem(),
 		h.automationsRendererFactory)
@@ -101,6 +105,35 @@ func (h *Handler) handleHttpRunRequest(_ http.ResponseWriter, r *http.Request, r
 	}
 
 	return runResponse{Succeeded: result.Succeeded, Message: result.Message, Error: result.Error}, nil
+}
+
+type rearmResponse struct {
+	// Armed is whether it will run again, and Why why not, if not.
+	Armed bool
+	Why   string
+}
+
+func (h *Handler) handleHttpRearmRequest(_ http.ResponseWriter, r *http.Request, request any) (any, error) {
+	if r.Method != http.MethodPost {
+		return nil, errors.New("method not allowed")
+	}
+
+	body, ok := request.(*runRequest)
+
+	if !ok || body.ID == "" {
+		return nil, errors.New("an ID is required")
+	}
+
+	result, err := h.store.Rearm(body.ID)
+
+	if err != nil {
+		// What is wrong with the request is for the person who made it; everything else is in the log.
+		fmt.Printf("automations.http: unable to re-enable %q: %v\n", body.ID, err)
+
+		return nil, errors.New("unable to re-enable it")
+	}
+
+	return rearmResponse{Armed: result.Armed, Why: result.Why}, nil
 }
 
 func (h *Handler) automationsRendererFactory() (spi.EntityRenderer, error) {

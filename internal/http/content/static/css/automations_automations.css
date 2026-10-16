@@ -45,6 +45,14 @@
     border-left-color: #5bc0de;
 }
 
+.entity-automations-automations .automation.waiting {
+    border-left-color: #5bc0de;
+}
+
+.entity-automations-automations .automation.expired {
+    border-left-color: #999999;
+}
+
 .entity-automations-automations .automation-header {
     display: flex;
     flex-wrap: wrap;
@@ -76,8 +84,13 @@
     background: #d9534f;
 }
 
-.entity-automations-automations .outcome-badge.missed {
+.entity-automations-automations .outcome-badge.missed,
+.entity-automations-automations .outcome-badge.waiting {
     background: #5bc0de;
+}
+
+.entity-automations-automations .outcome-badge.expired {
+    background: #999999;
 }
 
 .entity-automations-automations .description,

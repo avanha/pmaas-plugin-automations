@@ -351,7 +351,7 @@ func stateBefore(due time.Time) *config.PersistentConfigV1 {
 	return &config.PersistentConfigV1{Automations: map[string]config.AutomationStateV1{"lights": {LastDue: due}}}
 }
 
-func TestInit_ProvidesThePageAndTheRouteToRunOne(t *testing.T) {
+func TestInit_ProvidesThePageAndTheRoutesToRunOneAndToReenableOne(t *testing.T) {
 	f := newFixture(t, nil)
 	f.plugin.Init(f.container)
 
@@ -360,7 +360,7 @@ func TestInit_ProvidesThePageAndTheRouteToRunOne(t *testing.T) {
 		t.Errorf("list route: %+v", options)
 	}
 
-	if !reflect.DeepEqual(f.container.jsonRoutes, []string{"run"}) {
+	if !reflect.DeepEqual(f.container.jsonRoutes, []string{"run", "rearm"}) {
 		t.Errorf("json routes: %v", f.container.jsonRoutes)
 	}
 
@@ -685,6 +685,174 @@ func TestCatchUpInWords(t *testing.T) {
 	} {
 		if got := catchUpInWords(d); got != want {
 			t.Errorf("%v: %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestWaiting_IsShownQuietlyNotSavedNotAlertedAndActsWhenReady(t *testing.T) {
+	f := newFixture(t, stateBefore(at(0, 0)), at(1, 0))
+	f.a.catchUp = 7 * time.Hour
+	f.a.setFailure(automation.NotReady("78.1 is not below 75.0"))
+	f.setNow(at(0, 59)) // before the window opens
+	f.start()
+	f.minute(at(1, 0))
+
+	adapter := &automationStoreAdapter{parent: f.plugin}
+	saves := f.container.saveCount()
+
+	for minute := 1; minute < 30; minute++ {
+		f.minute(at(1, minute))
+	}
+
+	if f.container.saveCount() != saves {
+		t.Errorf("saved %d more times while only waiting", f.container.saveCount()-saves)
+	}
+
+	if raised, _ := f.container.alerts(); len(raised) != 0 {
+		t.Errorf("alerts raised: %+v", raised)
+	}
+
+	shown, _ := adapter.GetAutomations()
+	item := shown.Items[0]
+
+	if item.Outcome != "waiting" || item.OutcomeClass != "waiting" || item.Message != "78.1 is not below 75.0" ||
+		item.Error != "" || shown.Failing != 0 || f.a.runCount() != 30 {
+		t.Errorf("item %+v, failing %d, ran %d times", item, shown.Failing, f.a.runCount())
+	}
+
+	// It's ready.
+	f.a.setFailure(nil)
+	f.minute(at(1, 30))
+
+	shown, _ = adapter.GetAutomations()
+	if shown.Items[0].Outcome != "succeeded" || f.container.saveCount() != saves+1 {
+		t.Errorf("item %+v, saved %d more times", shown.Items[0], f.container.saveCount()-saves)
+	}
+
+	if saved := f.container.lastSaved(t).Automations["lights"]; saved.Outcome != "succeeded" || !saved.LastDue.Equal(at(1, 0)) {
+		t.Errorf("kept %+v", saved)
+	}
+}
+
+func TestWaiting_WhenTheTimeRunsOutItExpiresWithoutAnAlert(t *testing.T) {
+	f := newFixture(t, stateBefore(at(0, 0)), at(1, 0))
+	f.a.catchUp = 5 * time.Minute
+	f.a.setFailure(automation.NotReady("too warm"))
+	f.setNow(at(0, 59)) // before the window opens
+	f.start()
+
+	for minute := 0; minute <= 6; minute++ {
+		f.minute(at(1, minute))
+	}
+
+	shown, _ := (&automationStoreAdapter{parent: f.plugin}).GetAutomations()
+	item := shown.Items[0]
+
+	if item.Outcome != "condition not met" || item.OutcomeClass != "expired" || item.Message != "too warm" {
+		t.Errorf("item %+v", item)
+	}
+
+	if raised, _ := f.container.alerts(); len(raised) != 0 {
+		t.Errorf("alerts raised: %+v", raised)
+	}
+
+	if saved := f.container.lastSaved(t).Automations["lights"]; saved.Outcome != "condition not met" || !saved.LastDue.Equal(at(1, 0)) {
+		t.Errorf("kept %+v", saved)
+	}
+
+	// And what was kept is understood after a restart.
+	kept := f.container.lastSaved(t)
+	again := newFixture(t, &kept, at(1, 0), at(1, 0).Add(24*time.Hour))
+	again.setNow(at(1, 10))
+	again.start()
+
+	shown, _ = (&automationStoreAdapter{parent: again.plugin}).GetAutomations()
+	if shown.Items[0].Outcome != "condition not met" {
+		t.Errorf("after a restart: %+v", shown.Items[0])
+	}
+}
+
+func TestRearm_ARunAutomationGoesBackToWaitingForTheSameTime(t *testing.T) {
+	f := newFixture(t, stateBefore(at(0, 0)), at(1, 0))
+	f.a.catchUp = 7 * time.Hour
+	f.setNow(at(0, 59)) // before the window opens
+	f.start()
+	f.minute(at(1, 0)) // it runs, and is done for the night
+
+	adapter := &automationStoreAdapter{parent: f.plugin}
+
+	shown, _ := adapter.GetAutomations()
+	if !shown.Items[0].CanRearm || f.a.runCount() != 1 {
+		t.Fatalf("item %+v, ran %d times", shown.Items[0], f.a.runCount())
+	}
+
+	// Someone turned the fan back on, and wants the automation to take it from here: but it isn't ready.
+	f.a.setFailure(automation.NotReady("the fan is off"))
+	f.setNow(at(3, 0))
+
+	result, err := adapter.Rearm("lights")
+	if err != nil || !result.Armed || result.Why != "" {
+		t.Fatalf("result %+v, err %v", result, err)
+	}
+
+	f.container.settle()
+
+	shown, _ = adapter.GetAutomations()
+	item := shown.Items[0]
+
+	if item.Outcome != "waiting" || item.Message != "the fan is off" || item.CanRearm || f.a.runCount() != 2 {
+		t.Errorf("item %+v, ran %d times", item, f.a.runCount())
+	}
+
+	if !f.a.ranOnServer[1] {
+		t.Error("it was run off the server's goroutine")
+	}
+
+	// What is kept says it is due again, so a restart doesn't forget.
+	if saved := f.container.lastSaved(t).Automations["lights"]; !saved.LastDue.Before(at(1, 0)) {
+		t.Errorf("kept %+v", saved)
+	}
+
+	// It's ready, and acts.
+	f.a.setFailure(nil)
+	f.minute(at(3, 1))
+
+	shown, _ = adapter.GetAutomations()
+	if shown.Items[0].Outcome != "succeeded" || f.a.runCount() != 3 {
+		t.Errorf("item %+v, ran %d times", shown.Items[0], f.a.runCount())
+	}
+}
+
+func TestRearm_SaysWhyWhenItCanNotAndRefusesWhatIsNotThere(t *testing.T) {
+	f := newFixture(t, stateBefore(at(0, 0)), at(1, 0), at(1, 0).Add(24*time.Hour))
+	f.a.catchUp = time.Hour
+	f.setNow(at(0, 59)) // before the window opens
+	f.start()
+	f.minute(at(1, 0))
+	f.setNow(at(9, 0))
+
+	adapter := &automationStoreAdapter{parent: f.plugin}
+
+	result, err := adapter.Rearm("lights")
+	if err != nil || result.Armed || !strings.Contains(result.Why, "its time has passed") {
+		t.Errorf("result %+v, err %v", result, err)
+	}
+
+	if _, err := adapter.Rearm("nope"); err == nil {
+		t.Error("an unknown automation")
+	}
+
+	<-f.plugin.Stop()
+
+	if _, err := adapter.Rearm("lights"); err == nil {
+		t.Error("re-enabled while stopping")
+	}
+}
+
+func TestPersistedState_TheWordsForWaitingAndExpiredRoundTrip(t *testing.T) {
+	for _, word := range []string{"succeeded", "failed", "gave up", "missed", "waiting", "condition not met"} {
+		if got := persistedState(stateOf(config.AutomationStateV1{Outcome: word})).Outcome; got != word {
+			t.Errorf("%q came back as %q", word, got)
 		}
 	}
 }

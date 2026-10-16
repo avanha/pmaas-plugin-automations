@@ -10,6 +10,14 @@ type RunResult struct {
 	Error     string
 }
 
+// RearmResult is what came of asking for an automation to be enabled again.
+type RearmResult struct {
+	Armed bool
+
+	// Why says why not, when it wasn't, in words fit to show.
+	Why string
+}
+
 // AutomationStore is how internal/http reaches back into the plugin, which owns the automations. It's implemented
 // by the plugin's adapter, which crosses onto the right goroutine.
 type AutomationStore interface {
@@ -17,4 +25,7 @@ type AutomationStore interface {
 
 	// RunNow runs the automation with the ID, now, and waits for it.
 	RunNow(id string) (RunResult, error)
+
+	// Rearm makes the automation with the ID run again for the time it was last due, if that is still worth doing.
+	Rearm(id string) (RearmResult, error)
 }

@@ -14,7 +14,47 @@ class Automations {
             button.addEventListener("click", () => this.run(button));
         });
 
+        root.querySelectorAll("button.rearm-button").forEach((button) => {
+            button.addEventListener("click", () => this.rearm(button));
+        });
+
         return true;
+    }
+
+    rearm = async (button) => {
+        const resultElement = button.parentElement.querySelector(".run-result");
+        resultElement.textContent = "";
+        button.disabled = true;
+
+        try {
+            const response = await fetch("/plugins/automations/rearm", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ID: button.dataset.id}),
+            });
+
+            if (!response.ok) {
+                console.error("Failed to re-enable the automation:", response.status, await response.text());
+                resultElement.textContent = "Could not re-enable it (" + response.status + ")";
+                button.disabled = false;
+                return;
+            }
+
+            const result = await response.json();
+
+            if (!result.Armed) {
+                // It is a normal answer, not an error: say why nothing changed.
+                resultElement.textContent = "Not re-enabled: " + result.Why;
+                button.disabled = false;
+                return;
+            }
+
+            location.reload();
+        } catch (error) {
+            console.error("Failed to re-enable the automation:", error);
+            resultElement.textContent = "Could not re-enable it: " + error;
+            button.disabled = false;
+        }
     }
 
     run = async (button) => {

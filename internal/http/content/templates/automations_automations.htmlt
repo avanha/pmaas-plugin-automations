@@ -32,6 +32,9 @@
                 {{end}}
                 <div class="automation-footer">
                     <button class="run-button" data-id="{{.ID | html}}" data-name="{{.Name | html}}">Run now</button>
+                    {{if .CanRearm}}
+                        <button class="rearm-button" data-id="{{.ID | html}}" data-name="{{.Name | html}}" title="Run it again for the time it was last due, as if it hadn't yet">Re-enable</button>
+                    {{end}}
                     <span class="run-result"></span>
                 </div>
             </div>

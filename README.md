@@ -23,6 +23,10 @@ and catching up after a restart.
 - **Catch-up.** An automation is run for the time it was due only for as long after as its `CatchUp()` allows
   (an hour, by default). After that it gives up if it was failing, raising a warning on the alert console, or notes that
   it was missed if the server wasn't running.
+- **Waiting.** An automation that is due but not ready (`automation.NotReady("the room is still warm")`) is asked
+  again every minute, quietly: it shows as "waiting" with the reason, and is neither logged nor saved each minute. If
+  its catch-up passes while it is still waiting it ends as "condition not met", which is not worth an alert, since it
+  never had anything to do.
 - **New automations don't run retroactively.** One seen for the first time is not run for a time it was due before it
   was there.
 - **Restarts.** When each automation last got on is kept with the server's persistent configuration, so a restart
@@ -32,3 +36,7 @@ and catching up after a restart.
 
 The page, under "Automations", shows each one's trigger, when it is next due, when it last ran and how that went, and a
 "Run now" button. Running one by hand doesn't affect when it is next due.
+
+An automation that has dealt with the time it was last due, while that is still within its catch-up, also has a
+"Re-enable" button, which makes it run again for that time: for when someone took manual control and wants the
+automation to take the matter up again.
