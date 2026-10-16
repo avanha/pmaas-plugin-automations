@@ -238,7 +238,7 @@ func (p *plugin) report(event schedule.Event) {
 			p, event.Name, event.Due.Format("2006-01-02 3:04 PM"))
 	case schedule.OutcomeExpired:
 		// It was waiting for something that didn't happen. That's not a failure, so it isn't an alert.
-		fmt.Printf("%T %q never had anything to do for %s, since it was waiting: %s\n",
+		fmt.Printf("%T %q was still waiting when its time ran out (it was due at %s): %s\n",
 			p, event.Name, event.Due.Format("2006-01-02 3:04 PM"), event.Message)
 	case schedule.OutcomeWaiting:
 		// Only a run by hand is reported: the waiting that is asked about every minute is not news.
