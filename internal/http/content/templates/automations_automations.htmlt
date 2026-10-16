@@ -1,0 +1,42 @@
+<div class="entity-automations-automations">
+    <div class="summary">
+        {{len .Items}} automation{{if ne (len .Items) 1}}s{{end}}{{if .Failing}}, <span class="failing-count">{{.Failing}} failing</span>{{end}}
+    </div>
+    {{if .Items}}
+        {{range .Items}}
+            <div class="automation {{.OutcomeClass | html}}">
+                <div class="automation-header">
+                    <span class="name">{{.Name | html}}</span>
+                    <span class="outcome-badge {{.OutcomeClass | html}}">{{.Outcome | html}}</span>
+                </div>
+                {{if .Description}}
+                    <div class="description">{{.Description | html}}</div>
+                {{end}}
+                <div class="details">
+                    <div><span class="label">When</span> {{.Trigger | html}}</div>
+                    <div>
+                        <span class="label">Next</span>
+                        {{if .HasNext}}{{.Next.Format "Mon 2006-01-02 3:04 PM"}} ({{UntilTime .Next}}){{else}}not due in the next year{{end}}
+                    </div>
+                    <div>
+                        <span class="label">Last run</span>
+                        {{if .LastRun.IsZero}}never{{else}}{{.LastRun.Format "2006-01-02 3:04:05 PM"}} ({{RelativeTime .LastRun}}){{if .Manual}}, by hand{{end}}{{end}}
+                    </div>
+                    <div><span class="label">Catches up</span> {{.CatchUp | html}}</div>
+                </div>
+                {{if .Message}}
+                    <div class="message">{{.Message | html}}</div>
+                {{end}}
+                {{if .Error}}
+                    <div class="error"><i class="bi bi-exclamation-triangle"></i> {{.Error | html}}{{if .Attempts}} (attempt {{.Attempts}}){{end}}</div>
+                {{end}}
+                <div class="automation-footer">
+                    <button class="run-button" data-id="{{.ID | html}}" data-name="{{.Name | html}}">Run now</button>
+                    <span class="run-result"></span>
+                </div>
+            </div>
+        {{end}}
+    {{else}}
+        <div class="none">No automations are configured</div>
+    {{end}}
+</div>

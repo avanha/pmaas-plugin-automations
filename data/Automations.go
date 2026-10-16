@@ -1,0 +1,37 @@
+// Package data is what the automations page shows.
+package data
+
+import "time"
+
+// Automations is everything the page shows.
+type Automations struct {
+	Items []Automation
+
+	// Failing is how many are failing now, and being tried again.
+	Failing int
+}
+
+// Automation is one automation as it stands.
+type Automation struct {
+	ID          string
+	Name        string
+	Description string
+	Trigger     string
+
+	// CatchUp is how long after it was due that it still runs, in words.
+	CatchUp string
+
+	Next    time.Time
+	HasNext bool
+
+	LastRun time.Time
+
+	// Outcome is "succeeded", "failed", "gave up", "missed", or "not yet"; OutcomeClass is the same as a word safe
+	// to use as a style, and Manual is that the last run was by hand.
+	Outcome      string
+	OutcomeClass string
+	Manual       bool
+	Message      string
+	Error        string
+	Attempts     int
+}

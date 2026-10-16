@@ -1,0 +1,111 @@
+.entity-automations-automations {
+    display: flex;
+    flex-flow: column;
+}
+
+.entity-automations-automations .summary {
+    margin: 0 0 8px 0;
+    opacity: 0.8;
+}
+
+.entity-automations-automations .summary .failing-count {
+    color: #d9534f;
+    font-weight: bold;
+}
+
+.entity-automations-automations .none {
+    opacity: 0.8;
+}
+
+/* An automation is a card with a coloured edge, so how it is getting on reads at a glance down the page. Long text
+   wraps within the card rather than running out of it. */
+.entity-automations-automations .automation {
+    border: 1px solid #c8c8c8;
+    border-left-width: 5px;
+    border-left-color: #bbbbbb;
+    border-radius: 3px;
+    padding: 6px 8px;
+    margin: 0 0 8px 0;
+    overflow-wrap: anywhere;
+}
+
+.entity-automations-automations .automation.succeeded {
+    border-left-color: #5cb85c;
+}
+
+.entity-automations-automations .automation.failed {
+    border-left-color: #f0ad4e;
+}
+
+.entity-automations-automations .automation.gave-up {
+    border-left-color: #d9534f;
+}
+
+.entity-automations-automations .automation.missed {
+    border-left-color: #5bc0de;
+}
+
+.entity-automations-automations .automation-header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.entity-automations-automations .name {
+    font-weight: bold;
+}
+
+.entity-automations-automations .outcome-badge {
+    font-size: 0.8em;
+    padding: 0 6px;
+    border-radius: 3px;
+    background: #bbbbbb;
+    color: #fff;
+}
+
+.entity-automations-automations .outcome-badge.succeeded {
+    background: #5cb85c;
+}
+
+.entity-automations-automations .outcome-badge.failed {
+    background: #f0ad4e;
+}
+
+.entity-automations-automations .outcome-badge.gave-up {
+    background: #d9534f;
+}
+
+.entity-automations-automations .outcome-badge.missed {
+    background: #5bc0de;
+}
+
+.entity-automations-automations .description,
+.entity-automations-automations .message {
+    margin: 2px 0;
+    opacity: 0.85;
+}
+
+.entity-automations-automations .details {
+    margin: 4px 0;
+}
+
+.entity-automations-automations .details .label {
+    display: inline-block;
+    min-width: 5.5em;
+    opacity: 0.65;
+}
+
+.entity-automations-automations .error {
+    color: #d9534f;
+    margin: 2px 0;
+}
+
+.entity-automations-automations .automation-footer {
+    margin-top: 4px;
+}
+
+.entity-automations-automations .run-result {
+    margin-left: 8px;
+    color: #d9534f;
+}
