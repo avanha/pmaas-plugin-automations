@@ -1,0 +1,6 @@
+github.com/avanha/pmaas-automations v0.0.1 h1:iJ1bNWRQXFBjhzH+3srtxDVTvKGiwJfKzWtTXVNoRa8=
+github.com/avanha/pmaas-automations v0.0.1/go.mod h1:8F9fkx65+vaXjN29M6g8LbDji0QY29h06sn0XjAcWcA=
+github.com/avanha/pmaas-plugin-fakes v0.0.1 h1:7Y5mhhGghmrHTE+9VQEPoDrpDkQufnL8WthaEtIyaEs=
+github.com/avanha/pmaas-plugin-fakes v0.0.1/go.mod h1:4VSSmftJCMIaQTGp/GWyQmLfbrSjY3LyP9/fDQaxT5A=
+github.com/avanha/pmaas-spi v0.0.13 h1:PmKqD4cUME8wJhIHwfkWmpWpPnwFRa42G++eBVviPbc=
+github.com/avanha/pmaas-spi v0.0.13/go.mod h1:vKV8Ke5QXei42A4agIgxypbznjLqFQyi2hvqSyoe7c0=
