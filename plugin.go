@@ -167,6 +167,39 @@ func (p *plugin) runNow(id string) (schedule.Event, error) {
 	return event, nil
 }
 
+// setPaused pauses an automation or resumes it. Runs on the server's goroutine.
+func (p *plugin) setPaused(id string, paused bool) error {
+	if p.stopping.Load() {
+		return errors.New("the server is stopping")
+	}
+
+	changed, err := p.schedule.SetPaused(id, paused)
+	if err != nil {
+		return err
+	}
+
+	now := p.now()
+	p.publish(now, nil, changed)
+
+	if changed && paused {
+		// A paused automation is not going to run, so an alert that it did not would never clear.
+		err := p.container.EnqueueOnPluginGoRoutine(func() { p.clearAlert(id) })
+		if err != nil {
+			fmt.Printf("%T unable to clear the alert for %q: %v\n", p, id, err)
+		}
+	}
+
+	return nil
+}
+
+// clearAlert clears the alert about an automation not running, if the plugin raised one. Runs on the plugin's goroutine.
+func (p *plugin) clearAlert(id string) {
+	if p.alerting[id] {
+		delete(p.alerting, id)
+		p.sendAlert(alert.Clear(p.container, p.ShortName(), alertKey(id)))
+	}
+}
+
 // rearm makes an automation run again for the time it was last due, if that is still worth doing, and looks at it at
 // once. Runs on the server's goroutine.
 func (p *plugin) rearm(id string) (bool, string, error) {
@@ -232,10 +265,7 @@ func (p *plugin) report(event schedule.Event) {
 		fmt.Printf("%T ran %q%s: %s\n", p, event.Name, how, event.Message)
 
 		// Only if it was raised: an automation that never failed has nothing to clear, and that is most of them.
-		if p.alerting[event.ID] {
-			delete(p.alerting, event.ID)
-			p.sendAlert(alert.Clear(p.container, p.ShortName(), alertKey(event.ID)))
-		}
+		p.clearAlert(event.ID)
 	case schedule.OutcomeFailed:
 		// Every minute it is tried again, which would fill the log, so only the first, and then now and then.
 		if event.Manual || event.Attempts == 1 || event.Attempts%10 == 0 {
@@ -338,6 +368,7 @@ func persistedState(s schedule.State) config.AutomationStateV1 {
 		Message:  s.Message,
 		Error:    s.Error,
 		Attempts: s.Attempts,
+		Paused:   s.Paused,
 	}
 }
 
@@ -350,6 +381,7 @@ func stateOf(s config.AutomationStateV1) schedule.State {
 		Message:  s.Message,
 		Error:    s.Error,
 		Attempts: s.Attempts,
+		Paused:   s.Paused,
 	}
 }
 
@@ -380,6 +412,7 @@ func viewOf(s schedule.Status) data.Automation {
 		HasNext:      s.HasNext,
 		LastRun:      s.LastRun,
 		CanRearm:     s.CanRearm,
+		Paused:       s.Paused,
 		Outcome:      s.Outcome.String(),
 		OutcomeClass: outcomeClass(s.Outcome),
 		Manual:       s.Manual,

@@ -57,6 +57,10 @@ func (h *Handler) Init(container spi.IPMAASContainer, store common.AutomationSto
 		"rearm",
 		func() any { return &runRequest{} },
 		h.handleHttpRearmRequest)
+	container.AddJsonRoute(
+		"pause",
+		func() any { return &pauseRequest{} },
+		h.handleHttpPauseRequest)
 	container.RegisterEntityRenderer(
 		reflect.TypeOf((*data.Automations)(nil)).Elem(),
 		h.automationsRendererFactory)
@@ -105,6 +109,37 @@ func (h *Handler) handleHttpRunRequest(_ http.ResponseWriter, r *http.Request, r
 	}
 
 	return runResponse{Succeeded: result.Succeeded, Message: result.Message, Error: result.Error}, nil
+}
+
+type pauseRequest struct {
+	ID string
+
+	// Paused is whether to pause it (true) or resume it.
+	Paused bool
+}
+
+type pauseResponse struct {
+	Paused bool
+}
+
+func (h *Handler) handleHttpPauseRequest(_ http.ResponseWriter, r *http.Request, request any) (any, error) {
+	if r.Method != http.MethodPost {
+		return nil, errors.New("method not allowed")
+	}
+
+	body, ok := request.(*pauseRequest)
+
+	if !ok || body.ID == "" {
+		return nil, errors.New("an ID is required")
+	}
+
+	if err := h.store.SetPaused(body.ID, body.Paused); err != nil {
+		fmt.Printf("automations.http: unable to set paused=%v for %q: %v\n", body.Paused, body.ID, err)
+
+		return nil, errors.New("unable to pause or resume it")
+	}
+
+	return pauseResponse{Paused: body.Paused}, nil
 }
 
 type rearmResponse struct {

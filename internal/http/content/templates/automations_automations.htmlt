@@ -4,9 +4,10 @@
     </div>
     {{if .Items}}
         {{range .Items}}
-            <div class="automation {{.OutcomeClass | html}}">
+            <div class="automation {{.OutcomeClass | html}}{{if .Paused}} paused{{end}}">
                 <div class="automation-header">
                     <span class="name">{{.Name | html}}</span>
+                    {{if .Paused}}<span class="paused-badge"><i class="bi bi-pause-circle"></i> Paused</span>{{end}}
                     <span class="outcome-badge {{.OutcomeClass | html}}">{{.Outcome | html}}</span>
                 </div>
                 {{if .Description}}
@@ -16,7 +17,7 @@
                     <div><span class="label">When</span> {{.Trigger | html}}</div>
                     <div>
                         <span class="label">Next</span>
-                        {{if .HasNext}}{{.Next.Format "Mon 2006-01-02 3:04 PM"}} ({{UntilTime .Next}}){{else}}not due in the next year{{end}}
+                        {{if .Paused}}paused, so it won't run{{else if .HasNext}}{{.Next.Format "Mon 2006-01-02 3:04 PM"}} ({{UntilTime .Next}}){{else}}not due in the next year{{end}}
                     </div>
                     <div>
                         <span class="label">Last run</span>
@@ -32,6 +33,7 @@
                 {{end}}
                 <div class="automation-footer">
                     <button class="run-button" data-id="{{.ID | html}}" data-name="{{.Name | html}}">Run now</button>
+                    <button class="pause-button" data-id="{{.ID | html}}" data-paused="{{if .Paused}}true{{else}}false{{end}}" title="{{if .Paused}}Let it run again from the next time it is due{{else}}Stop it running until it is resumed. Run now still works.{{end}}">{{if .Paused}}Resume{{else}}Pause{{end}}</button>
                     {{if .CanRearm}}
                         <button class="rearm-button" data-id="{{.ID | html}}" data-name="{{.Name | html}}" title="Run it again for the time it was last due, as if it hadn't yet">Re-enable</button>
                     {{end}}

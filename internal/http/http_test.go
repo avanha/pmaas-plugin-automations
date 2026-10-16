@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 	"testing"
 	"text/template"
@@ -132,6 +133,7 @@ func TestTemplate_EscapesEverythingThatIsText(t *testing.T) {
 type fakeStore struct {
 	ran     []string
 	rearmed []string
+	paused  []string
 	result  common.RunResult
 	rearm   common.RearmResult
 	err     error
@@ -143,6 +145,12 @@ func (s *fakeStore) Rearm(id string) (common.RearmResult, error) {
 	s.rearmed = append(s.rearmed, id)
 
 	return s.rearm, s.err
+}
+
+func (s *fakeStore) SetPaused(id string, paused bool) error {
+	s.paused = append(s.paused, id+"="+strconv.FormatBool(paused))
+
+	return s.err
 }
 
 func (s *fakeStore) RunNow(id string) (common.RunResult, error) {
@@ -323,6 +331,77 @@ func TestRearmRequest(t *testing.T) {
 
 		_, err := h.handleHttpRearmRequest(nil, post, &runRequest{ID: "fan"})
 		if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "/var") {
+			t.Errorf("error %v", err)
+		}
+	})
+}
+
+func TestTemplate_APausedOneSaysSoAndOffersToResume_AndOthersOfferToPause(t *testing.T) {
+	paused := item("Fan")
+	paused.Paused = true
+
+	running := item("Lights")
+
+	out := render(t, data.Automations{Items: []data.Automation{paused, running}})
+
+	for _, want := range []string{
+		`automation succeeded paused`, "Paused</span>", "paused, so it won't run",
+		`class="pause-button" data-id="id-Fan" data-paused="true"`, ">Resume</button>",
+		`class="pause-button" data-id="id-Lights" data-paused="false"`, ">Pause</button>",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	if got := strings.Count(out, "paused-badge"); got != 1 {
+		t.Errorf("%d paused badges, want 1:\n%s", got, out)
+	}
+}
+
+func TestPauseRequest(t *testing.T) {
+	post := &http.Request{Method: http.MethodPost}
+
+	t.Run("pauses and resumes", func(t *testing.T) {
+		store := &fakeStore{}
+		h := &Handler{store: store}
+
+		for _, paused := range []bool{true, false} {
+			response, err := h.handleHttpPauseRequest(nil, post, &pauseRequest{ID: "fan", Paused: paused})
+			if err != nil || response.(pauseResponse).Paused != paused {
+				t.Fatalf("response %+v, err %v", response, err)
+			}
+		}
+
+		if strings.Join(store.paused, ",") != "fan=true,fan=false" {
+			t.Errorf("paused %v", store.paused)
+		}
+	})
+
+	t.Run("only POST, and an ID", func(t *testing.T) {
+		store := &fakeStore{}
+		h := &Handler{store: store}
+
+		if _, err := h.handleHttpPauseRequest(nil, &http.Request{Method: http.MethodGet}, &pauseRequest{ID: "fan"}); err == nil {
+			t.Error("a GET was accepted")
+		}
+
+		for _, body := range []any{&pauseRequest{}, nil, "x"} {
+			if _, err := h.handleHttpPauseRequest(nil, post, body); err == nil {
+				t.Errorf("%v was accepted", body)
+			}
+		}
+
+		if len(store.paused) != 0 {
+			t.Error("a rejected request still paused something")
+		}
+	})
+
+	t.Run("what went wrong inside is not told to the browser", func(t *testing.T) {
+		h := &Handler{store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
+
+		_, err := h.handleHttpPauseRequest(nil, post, &pauseRequest{ID: "fan", Paused: true})
+		if err == nil || strings.Contains(err.Error(), "secret") {
 			t.Errorf("error %v", err)
 		}
 	})

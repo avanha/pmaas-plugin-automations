@@ -683,3 +683,121 @@ func TestParseOutcome(t *testing.T) {
 		}
 	}
 }
+
+func TestSetPaused_APausedAutomationDoesNotRunAndIsNotCaughtUpOnResuming(t *testing.T) {
+	a := newFake("a", 2*time.Hour, at(8, 0), at(9, 0), at(10, 0), at(11, 0))
+	s := mustSchedule(t, a)
+
+	s.Evaluate(at(8, 30), at(8, 30)) // first seen
+	events, _ := s.Evaluate(at(9, 0), at(9, 0))
+	expectOutcomes(t, events, "a:succeeded")
+
+	changed, err := s.SetPaused("a", true)
+	if err != nil || !changed {
+		t.Fatalf("changed %v, err %v", changed, err)
+	}
+
+	events, changedState := s.Evaluate(at(10, 0), at(10, 0))
+	if len(events) != 0 || a.runs != 1 || !changedState {
+		t.Errorf("while paused: events %v, runs %d, changed %v", events, a.runs, changedState)
+	}
+
+	// Resumed after 10:00 went by, well within its catch-up: that time is not run for.
+	if changed, _ := s.SetPaused("a", false); !changed {
+		t.Error("resuming changed nothing")
+	}
+
+	events, _ = s.Evaluate(at(10, 30), at(10, 30))
+	if len(events) != 0 || a.runs != 1 {
+		t.Errorf("resumed: events %v, runs %d", events, a.runs)
+	}
+
+	events, _ = s.Evaluate(at(11, 0), at(11, 0))
+	expectOutcomes(t, events, "a:succeeded")
+}
+
+func TestSetPaused_SayingTheSameAgainChangesNothing_AndAnUnknownIDIsAnError(t *testing.T) {
+	s := mustSchedule(t, newFake("a", time.Hour, at(8, 0), at(9, 0)))
+
+	if changed, err := s.SetPaused("a", false); changed || err != nil {
+		t.Errorf("resume of a running one: %v %v", changed, err)
+	}
+
+	_, _ = s.SetPaused("a", true)
+
+	if changed, err := s.SetPaused("a", true); changed || err != nil {
+		t.Errorf("pause of a paused one: %v %v", changed, err)
+	}
+
+	if _, err := s.SetPaused("nope", true); err == nil {
+		t.Error("no error for an unknown ID")
+	}
+}
+
+func TestSetPaused_ItIsKeptAcrossARestart(t *testing.T) {
+	a := newFake("a", time.Hour, at(8, 0), at(9, 0), at(10, 0))
+	s := mustSchedule(t, a)
+	s.Evaluate(at(8, 30), at(8, 30))
+	_, _ = s.SetPaused("a", true)
+
+	b := newFake("a", time.Hour, at(8, 0), at(9, 0), at(10, 0))
+	restarted := mustSchedule(t, b)
+	restarted.Restore(s.States())
+
+	events, _ := restarted.Evaluate(at(10, 0), at(10, 0))
+	if len(events) != 0 || b.runs != 0 {
+		t.Errorf("a paused automation ran after a restart: %v", events)
+	}
+
+	if st := restarted.Statuses(at(10, 0)); !st[0].Paused {
+		t.Error("not shown as paused")
+	}
+}
+
+func TestSetPaused_PausingAFailingAutomationStopsTheRetriesAndTheFailure(t *testing.T) {
+	a := newFake("a", 2*time.Hour, at(8, 0), at(9, 0))
+	a.results = []result{{err: errors.New("offline")}}
+	s := mustSchedule(t, a)
+	s.Evaluate(at(8, 30), at(8, 30))
+	s.Evaluate(at(9, 0), at(9, 0))
+	s.Evaluate(at(9, 1), at(9, 1))
+
+	if a.runs != 2 {
+		t.Fatalf("runs %d", a.runs)
+	}
+
+	_, _ = s.SetPaused("a", true)
+
+	// At once, not at the next minute.
+	if st := s.Statuses(at(9, 2))[0]; st.Outcome != OutcomeNone || st.Error != "" || st.Attempts != 0 {
+		t.Errorf("straight after pausing: %+v", st.State)
+	}
+
+	s.Evaluate(at(9, 2), at(9, 2))
+
+	st := s.Statuses(at(9, 2))[0]
+	if a.runs != 2 || st.Outcome != OutcomeNone || st.Error != "" || st.Attempts != 0 {
+		t.Errorf("runs %d, status %+v", a.runs, st.State)
+	}
+}
+
+func TestSetPaused_ARunByHandStillWorksAndRearmIsRefused(t *testing.T) {
+	a := newFake("a", time.Hour, at(8, 0), at(9, 0))
+	s := mustSchedule(t, a)
+	s.Evaluate(at(8, 30), at(8, 30))
+	s.Evaluate(at(9, 0), at(9, 0))
+	_, _ = s.SetPaused("a", true)
+
+	if event, err := s.RunNow("a", at(9, 5)); err != nil || event.Outcome != OutcomeSucceeded || a.runs != 2 {
+		t.Errorf("event %+v, err %v, runs %d", event, err, a.runs)
+	}
+
+	armed, why, _ := s.Rearm("a", at(9, 5))
+	if armed || why != "it is paused" {
+		t.Errorf("armed %v, why %q", armed, why)
+	}
+
+	if s.Statuses(at(9, 5))[0].CanRearm {
+		t.Error("a paused automation offers Re-enable")
+	}
+}

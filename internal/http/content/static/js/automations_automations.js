@@ -18,7 +18,39 @@ class Automations {
             button.addEventListener("click", () => this.rearm(button));
         });
 
+        root.querySelectorAll("button.pause-button").forEach((button) => {
+            button.addEventListener("click", () => this.pause(button));
+        });
+
         return true;
+    }
+
+    pause = async (button) => {
+        const resultElement = button.parentElement.querySelector(".run-result");
+        resultElement.textContent = "";
+        button.disabled = true;
+
+        try {
+            const response = await fetch("/plugins/automations/pause", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                // The button says what it is now; the request is for the opposite.
+                body: JSON.stringify({ID: button.dataset.id, Paused: button.dataset.paused !== "true"}),
+            });
+
+            if (!response.ok) {
+                console.error("Failed to pause or resume the automation:", response.status, await response.text());
+                resultElement.textContent = "Could not do that (" + response.status + ")";
+                button.disabled = false;
+                return;
+            }
+
+            location.reload();
+        } catch (error) {
+            console.error("Failed to pause or resume the automation:", error);
+            resultElement.textContent = "Could not do that: " + error;
+            button.disabled = false;
+        }
     }
 
     rearm = async (button) => {

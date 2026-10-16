@@ -24,4 +24,7 @@ type AutomationStateV1 struct {
 	Message  string
 	Error    string
 	Attempts int
+
+	// Paused is that a person paused the automation. Absent in what was kept before pausing existed, which reads as not paused.
+	Paused bool
 }

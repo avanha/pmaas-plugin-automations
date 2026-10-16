@@ -30,6 +30,9 @@ type Automation struct {
 	// for.
 	CanRearm bool
 
+	// Paused is that a person has paused it: it is not run until it is resumed.
+	Paused bool
+
 	// Outcome is "succeeded", "failed", "gave up", "missed", "waiting", "condition not met" or "not yet"; OutcomeClass is the same as a word safe
 	// to use as a style, and Manual is that the last run was by hand.
 	Outcome      string

@@ -122,3 +122,16 @@
     margin-left: 8px;
     color: #d9534f;
 }
+
+/* A paused automation is dimmed, and says so in a badge next to the outcome. */
+.entity-automations-automations .automation.paused {
+    border-left-color: #777777;
+    opacity: 0.75;
+}
+
+.entity-automations-automations .paused-badge {
+    font-size: 0.8em;
+    padding: 0 6px;
+    border-radius: 3px;
+    border: 1px solid #777777;
+}

@@ -44,3 +44,8 @@ The page, under "Automations", shows each one's trigger, when it is next due, wh
 An automation that has dealt with the time it was last due, while that is still within its catch-up, also has a
 "Re-enable" button, which makes it run again for that time: for when someone took manual control and wants the
 automation to take the matter up again.
+
+Each also has a "Pause" button. A paused automation is marked as paused on the page and is not run until it is resumed.
+The times it is due while it is paused are dealt with as they come, so resuming it carries on from the next time it is
+due, and does not catch up on the ones it was paused through. "Run now" still works on a paused automation, and an
+alert about it not running is cleared when it is paused. Which are paused is kept across restarts.

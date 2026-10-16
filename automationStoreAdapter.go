@@ -74,3 +74,16 @@ func (a *automationStoreAdapter) Rearm(id string) (common.RearmResult, error) {
 
 	return common.RearmResult{Armed: result.armed, Why: result.why}, nil
 }
+
+func (a *automationStoreAdapter) SetPaused(id string, paused bool) error {
+	resultCh := make(chan error, 1)
+
+	err := a.parent.container.EnqueueOnServerGoRoutine([]func(){func() {
+		resultCh <- a.parent.setPaused(id, paused)
+	}})
+	if err != nil {
+		return errors.New("the server is not accepting requests")
+	}
+
+	return <-resultCh
+}

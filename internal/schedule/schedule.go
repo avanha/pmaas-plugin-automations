@@ -90,6 +90,10 @@ type State struct {
 
 	// Attempts is how many times in a row it has failed for the time it is now due.
 	Attempts int
+
+	// Paused is that a person has stopped it running. A paused automation is not run, and the times it is due while it is
+	// paused are dealt with as they come, so that resuming it does not run it for a time long gone. It is kept across restarts.
+	Paused bool
 }
 
 // Event is something that happened to an automation, which the server may want to tell someone about.
@@ -214,6 +218,17 @@ func (s *Schedule) Evaluate(now time.Time, wall time.Time) (events []Event, chan
 			continue
 		}
 
+		if e.Paused {
+			// Dealt with, not run, so that it isn't run for this time when it is resumed.
+			if due.After(e.LastDue) {
+				e.LastDue = due
+				e.settleForPause()
+				changed = true
+			}
+
+			continue
+		}
+
 		if !due.After(e.LastDue) {
 			continue
 		}
@@ -233,6 +248,38 @@ func (s *Schedule) Evaluate(now time.Time, wall time.Time) (events []Event, chan
 	}
 
 	return events, changed
+}
+
+// settleForPause drops what an automation that is failing or waiting was doing, since it isn't going to be tried again
+// while it is paused: leaving the error up would say it is still failing.
+func (e *entry) settleForPause() {
+	e.Attempts, e.waitingFor = 0, time.Time{}
+
+	if e.Outcome == OutcomeFailed || e.Outcome == OutcomeWaiting {
+		e.Outcome, e.Message, e.Error = OutcomeNone, "", ""
+	}
+}
+
+// SetPaused pauses an automation, or resumes it, and reports whether that changed anything. Pausing is for the times it is due
+// from now on: one that is paused is not run, and when it is resumed it carries on from the next time it is due, not from
+// the ones it was paused through. A run by hand still works while it is paused.
+func (s *Schedule) SetPaused(id string, paused bool) (bool, error) {
+	e, ok := s.byID[id]
+	if !ok {
+		return false, fmt.Errorf("there is no automation %q", id)
+	}
+
+	if e.Paused == paused {
+		return false, nil
+	}
+
+	e.Paused = paused
+
+	if paused {
+		e.settleForPause()
+	}
+
+	return true, nil
 }
 
 // tooLate deals with a time the automation was due that is further back than its catch-up.
@@ -277,6 +324,10 @@ func (s *Schedule) Rearm(id string, now time.Time) (bool, string, error) {
 	e, ok := s.byID[id]
 	if !ok {
 		return false, "", fmt.Errorf("there is no automation %q", id)
+	}
+
+	if e.Paused {
+		return false, "it is paused", nil
 	}
 
 	now = now.Truncate(time.Minute)
@@ -368,7 +419,7 @@ func (s *Schedule) Statuses(now time.Time) []Status {
 
 		// The time it was last due, if it is dealt with and not too long ago for it to be worth running now.
 		due, wasDue := e.Trigger().Previous(now)
-		canRearm := wasDue && !due.After(e.LastDue) && now.Truncate(time.Minute).Sub(due) <= e.CatchUp()
+		canRearm := !e.Paused && wasDue && !due.After(e.LastDue) && now.Truncate(time.Minute).Sub(due) <= e.CatchUp()
 
 		statuses[i] = Status{
 			ID:          e.ID(),

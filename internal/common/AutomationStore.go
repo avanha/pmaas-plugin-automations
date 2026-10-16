@@ -28,4 +28,7 @@ type AutomationStore interface {
 
 	// Rearm makes the automation with the ID run again for the time it was last due, if that is still worth doing.
 	Rearm(id string) (RearmResult, error)
+
+	// SetPaused pauses the automation with the ID, or resumes it. The pause is kept across restarts.
+	SetPaused(id string, paused bool) error
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/avanha/pmaas-plugin-automations/config"
 	"github.com/avanha/pmaas-plugin-automations/data"
+	"github.com/avanha/pmaas-plugin-automations/internal/schedule"
 	spi "github.com/avanha/pmaas-spi"
 	"github.com/avanha/pmaas-spi/alert"
 	"github.com/avanha/pmaas-spi/automation"
@@ -363,7 +364,7 @@ func TestInit_ProvidesThePageAndTheRoutesToRunOneAndToReenableOne(t *testing.T) 
 		t.Errorf("list route: %+v", options)
 	}
 
-	if !reflect.DeepEqual(f.container.jsonRoutes, []string{"run", "rearm"}) {
+	if !reflect.DeepEqual(f.container.jsonRoutes, []string{"run", "rearm", "pause"}) {
 		t.Errorf("json routes: %v", f.container.jsonRoutes)
 	}
 
@@ -1117,5 +1118,111 @@ func TestSuccess_ClearsOnlyAnAlertThatWasRaisedNotOneThatNeverWas(t *testing.T) 
 
 	if _, cleared := f.container.alerts(); len(cleared) != 1 {
 		t.Errorf("cleared %+v", cleared)
+	}
+}
+
+func TestPause_StopsItRunningIsShownAndKeptAcrossARestart(t *testing.T) {
+	f := newFixture(t, stateBefore(at(0, 0)), at(1, 0), at(2, 0), at(3, 0))
+	f.a.catchUp = 7 * time.Hour
+	f.setNow(at(0, 59))
+	f.start()
+
+	adapter := &automationStoreAdapter{parent: f.plugin}
+
+	if err := adapter.SetPaused("lights", true); err != nil {
+		t.Fatal(err)
+	}
+
+	f.container.settle()
+
+	shown, _ := adapter.GetAutomations()
+	if !shown.Items[0].Paused {
+		t.Fatalf("not shown as paused: %+v", shown.Items[0])
+	}
+
+	if !f.container.lastSaved(t).Automations["lights"].Paused {
+		t.Fatal("the pause was not kept")
+	}
+
+	f.minute(at(1, 0))
+
+	if f.a.runCount() != 0 {
+		t.Fatal("a paused automation ran")
+	}
+
+	// The server restarts: what was kept is loaded, and it is still paused and still doesn't run.
+	kept := f.container.lastSaved(t)
+	g := newFixture(t, &kept, at(1, 0), at(2, 0), at(3, 0))
+	g.a.catchUp = 7 * time.Hour
+	g.setNow(at(1, 30))
+	g.start()
+	g.minute(at(2, 0))
+
+	if g.a.runCount() != 0 {
+		t.Fatal("it ran after a restart while paused")
+	}
+
+	shown, _ = (&automationStoreAdapter{parent: g.plugin}).GetAutomations()
+	if !shown.Items[0].Paused {
+		t.Fatal("not paused after a restart")
+	}
+
+	// Resumed, it carries on from the next time it is due.
+	if err := (&automationStoreAdapter{parent: g.plugin}).SetPaused("lights", false); err != nil {
+		t.Fatal(err)
+	}
+
+	g.container.settle()
+	g.minute(at(2, 1))
+
+	if g.a.runCount() != 0 {
+		t.Fatal("resuming ran it for a time it was paused through")
+	}
+
+	g.minute(at(3, 0))
+
+	if g.a.runCount() != 1 {
+		t.Fatalf("ran %d times after the next due time", g.a.runCount())
+	}
+}
+
+func TestPause_ClearsTheAlertAboutItNotRunningAndANonexistentOneIsRefused(t *testing.T) {
+	f := failingFixture(t, nil)
+	failuresFrom17(f, 10)
+
+	if raised, _ := f.container.alerts(); len(raised) != 1 {
+		t.Fatalf("no alert to begin with: %+v", raised)
+	}
+
+	adapter := &automationStoreAdapter{parent: f.plugin}
+
+	if err := adapter.SetPaused("lights", true); err != nil {
+		t.Fatal(err)
+	}
+
+	f.container.settle()
+
+	if _, cleared := f.container.alerts(); len(cleared) != 1 {
+		t.Errorf("cleared %+v", cleared)
+	}
+
+	shown, _ := adapter.GetAutomations()
+	if shown.Failing != 0 {
+		t.Errorf("a paused automation counted as failing: %+v", shown)
+	}
+
+	if err := adapter.SetPaused("nope", true); err == nil {
+		t.Error("no error for an automation that isn't there")
+	}
+}
+
+func TestPersistedState_PausedRoundTripsAndOldStateReadsAsNotPaused(t *testing.T) {
+	back := stateOf(persistedState(schedule.State{Paused: true}))
+	if !back.Paused {
+		t.Error("paused lost")
+	}
+
+	if stateOf(config.AutomationStateV1{}).Paused {
+		t.Error("old state reads as paused")
 	}
 }
