@@ -574,14 +574,6 @@ func doorAutomations(door *fake.Door, severity alert.SeverityFunc) *PluginConfig
 		pmaasautomations.WithCatchUp(0),
 	))
 
-	conf.Add(pmaasautomations.New(
-		"garage-door-sensor-offline", "Alert when the garage door sensor is out of touch",
-		trigger.Every(time.Minute),
-		pmaasautomations.WatchAlert(conf.Alerts(), "garage-door-sensor-offline", "Garage door sensor offline",
-			alert.Always(alert.SeverityWarning), pmaasautomations.DoorSensorOffline(door, 5*time.Minute)),
-		pmaasautomations.WithCatchUp(0),
-	))
-
 	return &conf
 }
 
@@ -762,7 +754,7 @@ func TestGarageDoor_AnOpeningShorterThanFiveMinutesRaisesNothing(t *testing.T) {
 	})
 }
 
-func TestGarageDoor_AnOfflineSensorHoldsTheAlertAndHasAnAlertOfItsOwn(t *testing.T) {
+func TestGarageDoor_AnOfflineSensorHoldsTheAlertUntilItIsHeardFromAgain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		midnight, _ := inColorado(t, 2000, time.June, 21)
 
@@ -788,44 +780,29 @@ func TestGarageDoor_AnOfflineSensorHoldsTheAlertAndHasAnAlertOfItsOwn(t *testing
 			f.minute(nil)
 		}
 
-		// Four minutes offline: the door alert is held, not cleared, and there is no sensor alert yet.
+		// Four minutes offline: the door alert is held, not cleared.
 		if got := logOf(f); got != "[10:05 warning watch:garage-door-open]" {
 			t.Fatalf("while briefly offline: %s", got)
 		}
 
-		f.minute(nil) // five minutes offline
-
-		log := f.container.alertLog()
-		if len(log) != 2 || log[1].key != "watch:garage-door-sensor-offline" || log[1].severity != alert.SeverityWarning ||
-			log[1].title != "Garage door sensor offline" || !log[1].at.Equal(offlineSince.Add(5*time.Minute)) {
-			t.Fatalf("after five minutes offline: %s", logOf(f))
-		}
-
-		// An hour offline: still the two, nothing cleared by a sensor that can't be heard.
+		// An hour offline: still held, nothing cleared by a sensor that can't be heard. (The sensor being offline is
+		// the sensor's own alert to raise, not an automation's.)
 		for range 60 {
 			f.minute(nil)
 		}
 
-		if len(f.container.alertLog()) != 2 {
-			t.Fatalf("while offline: %s", logOf(f))
+		if got := logOf(f); got != "[10:05 warning watch:garage-door-open]" {
+			t.Fatalf("while offline: %s", got)
 		}
 
-		// It comes back, and says the door is closed: both alerts clear.
+		// It comes back, and says the door is closed: the alert clears.
 		f.minute(func(time.Time) {
 			door.SetOffline(false)
 			door.Report(device.DoorPositionClosed)
 		})
 
-		log = f.container.alertLog()
-		cleared := 0
-
-		for _, e := range log {
-			if e.cleared {
-				cleared++
-			}
-		}
-
-		if len(log) != 4 || cleared != 2 {
+		log := f.container.alertLog()
+		if len(log) != 2 || !log[1].cleared || log[1].key != "watch:garage-door-open" {
 			t.Errorf("after it came back: %s", logOf(f))
 		}
 
