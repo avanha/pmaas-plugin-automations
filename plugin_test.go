@@ -856,3 +856,144 @@ func TestPersistedState_TheWordsForWaitingAndExpiredRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// failingFixture is a plugin whose one automation, due at 17:00 with an hour to catch up in, fails every time it is run.
+func failingFixture(t *testing.T, configure func(*PluginConfig)) *fixture {
+	t.Helper()
+
+	f := newFixture(t, stateBefore(at(0, 0)), at(17, 0))
+	f.a.setFailure(errors.New("the plug is offline"))
+
+	if configure != nil {
+		configure(&f.plugin.config)
+	}
+
+	f.start()
+
+	return f
+}
+
+func failuresFrom17(f *fixture, count int) {
+	for minute := 0; minute < count; minute++ {
+		f.minute(at(17, minute))
+	}
+}
+
+func TestFailing_AnAlertIsRaisedOnTheTenthFailureInARowAndOnlyOnce(t *testing.T) {
+	f := failingFixture(t, nil)
+
+	failuresFrom17(f, 9)
+
+	if raised, _ := f.container.alerts(); len(raised) != 0 {
+		t.Fatalf("an alert after nine failures: %+v", raised)
+	}
+
+	f.minute(at(17, 9))
+
+	raised, _ := f.container.alerts()
+	if len(raised) != 1 || raised[0].Source != "automations" || raised[0].Key != "did-not-run:lights" ||
+		raised[0].Severity != alert.SeverityWarning || raised[0].Title != "Automation is failing: Name of lights" ||
+		!strings.Contains(raised[0].Message, "failed 10 times in a row") || !strings.Contains(raised[0].Message, "the plug is offline") {
+		t.Fatalf("raised %+v", raised)
+	}
+
+	// It keeps failing, and keeps being tried: the alert stays, and is not raised again each minute.
+	for minute := 10; minute < 40; minute++ {
+		f.minute(at(17, minute))
+	}
+
+	if raised, _ := f.container.alerts(); len(raised) != 1 {
+		t.Errorf("%d alerts after forty failures", len(raised))
+	}
+
+	// It works again: the alert is cleared.
+	f.a.setFailure(nil)
+	f.minute(at(17, 40))
+
+	if _, cleared := f.container.alerts(); len(cleared) != 1 || cleared[0].Key != "did-not-run:lights" {
+		t.Errorf("cleared %+v", cleared)
+	}
+}
+
+func TestFailing_TheNumberOfFailuresThatRaisesTheAlertCanBeSet(t *testing.T) {
+	f := failingFixture(t, func(c *PluginConfig) { c.AlertAfterFailures = 3 })
+
+	failuresFrom17(f, 2)
+
+	if raised, _ := f.container.alerts(); len(raised) != 0 {
+		t.Fatalf("an alert after two failures: %+v", raised)
+	}
+
+	f.minute(at(17, 2))
+
+	if raised, _ := f.container.alerts(); len(raised) != 1 || !strings.Contains(raised[0].Message, "failed 3 times") {
+		t.Errorf("raised %+v", raised)
+	}
+}
+
+func TestFailing_ANegativeNumberMeansNoAlertUntilItGivesUp(t *testing.T) {
+	f := failingFixture(t, func(c *PluginConfig) { c.AlertAfterFailures = -1 })
+	f.a.catchUp = 20 * time.Minute
+
+	failuresFrom17(f, 21)
+
+	if raised, _ := f.container.alerts(); len(raised) != 0 {
+		t.Fatalf("an alert before it gave up: %+v", raised)
+	}
+
+	f.minute(at(17, 21))
+
+	raised, _ := f.container.alerts()
+	if len(raised) != 1 || raised[0].Title != "Automation did not run: Name of lights" {
+		t.Errorf("raised %+v", raised)
+	}
+}
+
+func TestFailing_AConfigurationThatNeverSaidUsesTheDefault(t *testing.T) {
+	if got := (PluginConfig{}).alertAfterFailures(); got != DefaultAlertAfterFailures || DefaultAlertAfterFailures != 10 {
+		t.Errorf("zero value: %d", got)
+	}
+
+	if got := NewPluginConfig(); got.AlertAfterFailures != DefaultAlertAfterFailures || got.alertAfterFailures() != 10 {
+		t.Errorf("new: %d, %d", got.AlertAfterFailures, got.alertAfterFailures())
+	}
+
+	if got := (PluginConfig{AlertAfterFailures: 4}).alertAfterFailures(); got != 4 {
+		t.Errorf("set: %d", got)
+	}
+
+	if got := (PluginConfig{AlertAfterFailures: -5}).alertAfterFailures(); got != 0 {
+		t.Errorf("negative: %d", got)
+	}
+}
+
+func TestFailing_TheAlertSpeaksOfGivingUpWhenItDoesAndKeepsTheSameKeySoItIsOneAlert(t *testing.T) {
+	f := failingFixture(t, func(c *PluginConfig) { c.AlertAfterFailures = 2 })
+	f.a.catchUp = 5 * time.Minute
+
+	failuresFrom17(f, 7) // 17:00..17:06: failing, then gives up as 17:06 is past the five minutes
+
+	raised, _ := f.container.alerts()
+	if len(raised) != 2 || raised[0].Key != raised[1].Key || raised[0].Title != "Automation is failing: Name of lights" ||
+		raised[1].Title != "Automation did not run: Name of lights" {
+		t.Errorf("raised %+v", raised)
+	}
+}
+
+func TestFailing_AFailureByHandIsNotCountedTowardTheAlert(t *testing.T) {
+	f := failingFixture(t, func(c *PluginConfig) { c.AlertAfterFailures = 1 })
+
+	adapter := &automationStoreAdapter{parent: f.plugin}
+
+	for range 5 {
+		if _, err := adapter.RunNow("lights"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f.container.settle()
+
+	if raised, _ := f.container.alerts(); len(raised) != 0 {
+		t.Errorf("raised %+v", raised)
+	}
+}

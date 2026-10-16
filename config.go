@@ -6,14 +6,37 @@ import (
 	"github.com/avanha/pmaas-spi/automation"
 )
 
+// DefaultAlertAfterFailures is how many times in a row an automation has to fail before the plugin raises an alert about it,
+// if the configuration doesn't say.
+const DefaultAlertAfterFailures = 10
+
 // PluginConfig configures the plugin.
 type PluginConfig struct {
+	// AlertAfterFailures is how many failed runs in a row it takes for the plugin to raise an alert that an automation is
+	// failing, without waiting for it to give up: for something that runs every minute, like a fan being kept in step with
+	// a temperature, giving up never comes, since there is always a new time it is due. Zero means
+	// DefaultAlertAfterFailures, and a negative number means no alert until it gives up, which for those that never
+	// do is never. The alert is cleared when the automation next runs.
+	AlertAfterFailures int
+
 	automations []automation.Automation
 	ids         map[string]bool
 }
 
 func NewPluginConfig() PluginConfig {
-	return PluginConfig{ids: make(map[string]bool)}
+	return PluginConfig{AlertAfterFailures: DefaultAlertAfterFailures, ids: make(map[string]bool)}
+}
+
+// alertAfterFailures is the number of failures in a row that raises the alert, or zero for none.
+func (c PluginConfig) alertAfterFailures() int {
+	switch {
+	case c.AlertAfterFailures == 0:
+		return DefaultAlertAfterFailures
+	case c.AlertAfterFailures < 0:
+		return 0
+	default:
+		return c.AlertAfterFailures
+	}
 }
 
 // Add adds an automation for the plugin to run.

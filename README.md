@@ -23,6 +23,10 @@ and catching up after a restart.
 - **Catch-up.** An automation is run for the time it was due only for as long after as its `CatchUp()` allows
   (an hour, by default). After that it gives up if it was failing, raising a warning on the alert console, or notes that
   it was missed if the server wasn't running.
+- **Failing.** An automation that keeps failing raises an alert on the alert console after ten failed runs in a row
+  (`PluginConfig.AlertAfterFailures`), which matters most for one that runs every minute, since that never gives up:
+  there is always a new time it is due. The alert is cleared the next time it runs. One that gives up, because its
+  catch-up passed, raises it then too, if it has not already.
 - **Waiting.** An automation that is due but not ready (`automation.NotReady("the room is still warm")`) is asked
   again every minute, quietly: it shows as "waiting" with the reason, and is neither logged nor saved each minute. If
   its catch-up passes while it is still waiting it ends as "condition not met", which is not worth an alert, since it

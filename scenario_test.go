@@ -1,6 +1,7 @@
 package automations
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -50,16 +51,21 @@ func atticFanAutomations(fan device.ISwitch, attic, outside *fake.Thermometer) *
 	conf := NewPluginConfig()
 
 	conf.Add(pmaasautomations.New(
-		"attic-fan", "Run the attic fan when the attic is over 90°F and warmer than outside",
+		"attic-fan", "Run the attic fan when the attic is over 90°F and warmer than outside, until it is under 88°F",
 		trigger.Windowed(
 			trigger.Every(time.Minute),
 			trigger.AtTimeOfDay(8, 0),
 			trigger.Sun(lafayette, sun.Sunset, time.Hour)),
-		pmaasautomations.Follow(
+		pmaasautomations.Regulate(
 			fan,
+			// On when the attic is over 90 and warmer than outside...
 			pmaasautomations.AllOf(
 				pmaasautomations.TemperatureAbove(attic, pmaasautomations.Fahrenheit(90), 10*time.Minute),
 				pmaasautomations.Warmer(attic, outside, 10*time.Minute)),
+			// ...and off when it is under 88, or outside is as warm.
+			pmaasautomations.AnyOf(
+				pmaasautomations.TemperatureBelow(attic, pmaasautomations.Fahrenheit(88), 10*time.Minute),
+				pmaasautomations.Not(pmaasautomations.Warmer(attic, outside, 10*time.Minute))),
 			5*time.Minute),
 		pmaasautomations.WithCatchUp(0),
 	))
@@ -210,6 +216,7 @@ func TestAtticFan_ADayOfHeatFlappingAStaleSensorAndAWarmOutside(t *testing.T) {
 
 		var changes []fanChange
 		last := device.SwitchStateOff
+		wantOn := false
 
 		report := func(at time.Time) {
 			outside.Set(float32(pmaasautomations.Fahrenheit(float32(trueOutside(at))).Celsius()))
@@ -237,7 +244,14 @@ func TestAtticFan_ADayOfHeatFlappingAStaleSensorAndAWarmOutside(t *testing.T) {
 				last = state
 			}
 
-			wantOn := trueAttic(now) > 90 && trueAttic(now) > trueOutside(now)
+			// On above 90 and warmer than outside; off below 88 or when outside is as warm; and between, as it was.
+			switch {
+			case trueAttic(now) > 90 && trueAttic(now) > trueOutside(now):
+				wantOn = true
+			case trueAttic(now) < 88 || trueAttic(now) <= trueOutside(now):
+				wantOn = false
+			}
+
 			ticks = append(ticks, tick{at: now, state: state, wantOn: wantOn, readingsOld: silent(now)})
 		}
 
@@ -291,7 +305,8 @@ func TestAtticFan_ADayOfHeatFlappingAStaleSensorAndAWarmOutside(t *testing.T) {
 			}
 		}
 
-		// 6. It did its job: on in the heat, and not flapping through the half hour the attic hovered around 90.
+		// 6. It did its job: on in the heat, and not flapping at all through the half hour the attic hovered either side of 90,
+		// which is within the gap between coming on at 90 and going off at 88.
 		if len(changes) < 3 {
 			t.Errorf("the fan hardly changed all day: %s", summary)
 		}
@@ -304,7 +319,7 @@ func TestAtticFan_ADayOfHeatFlappingAStaleSensorAndAWarmOutside(t *testing.T) {
 			}
 		}
 
-		if flapping > 6 {
+		if flapping > 1 {
 			t.Errorf("the fan changed %d times in the half hour the attic hovered around 90: %s", flapping, summary)
 		}
 
@@ -462,6 +477,77 @@ func TestAtticFan_AnOutsideThermometerThatWentQuietAfterACoolReadingDoesNotStart
 
 		if fan.GetSwitchData().State != device.SwitchStateOn {
 			t.Errorf("the fan is %v, with the attic hotter than the outside", fan.GetSwitchData().State)
+		}
+
+		f.stop()
+	})
+}
+
+func TestAtticFan_AFanThatCanNotBeReachedRaisesOneAlertAndClearsItWhenItIsBack(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		fan := fake.NewSwitch("Attic fan", device.SwitchStateOff)
+		attic := fake.NewThermometer("Attic", 20)
+		outside := fake.NewThermometer("Outside", 20)
+
+		f := startInBubble(t, atticFanAutomations(fan, attic, outside), nil)
+
+		cool := func(time.Time) {
+			attic.Set(pmaasautomations.Fahrenheit(70).Celsius())
+			outside.Set(pmaasautomations.Fahrenheit(65).Celsius())
+		}
+		hot := func(time.Time) {
+			attic.Set(pmaasautomations.Fahrenheit(100).Celsius())
+			outside.Set(pmaasautomations.Fahrenheit(80).Celsius())
+		}
+
+		// A cool morning, with the fan off, up to and including 9:59.
+		for time.Now().Before(hm(midnight, 9, 59)) {
+			f.minute(cool)
+		}
+
+		// At 10:00 the attic heats up and the fan can't be reached. The automation wants to turn it on every minute, and
+		// every minute it can't. It never gives up, since there is always a new minute it is due.
+		fan.FailWith(errors.New("the plug is offline"))
+
+		f.minute(hot) // 10:00, the first failure
+
+		for failures := 2; failures <= 9; failures++ {
+			f.minute(hot)
+		}
+
+		if raised, _ := f.container.alerts(); len(raised) != 0 {
+			t.Fatalf("an alert at %s, after nine failures: %+v", time.Now().Format("15:04"), raised)
+		}
+
+		f.minute(hot) // 10:09, the tenth
+
+		raised, _ := f.container.alerts()
+		if len(raised) != 1 || raised[0].Title != "Automation is failing: Run the attic fan when the attic is over 90°F and warmer than outside, until it is under 88°F" ||
+			!strings.Contains(raised[0].Message, "failed 10 times in a row") || !strings.Contains(raised[0].Message, "the plug is offline") {
+			t.Fatalf("at %s: %+v", time.Now().Format("15:04"), raised)
+		}
+
+		// Two more hours of it: still the one alert.
+		for time.Now().Before(hm(midnight, 12, 0)) {
+			f.minute(hot)
+		}
+
+		if raised, _ := f.container.alerts(); len(raised) != 1 {
+			t.Errorf("%d alerts after hours of failing", len(raised))
+		}
+
+		// The plug comes back at noon: the fan comes on at once, and the alert is cleared.
+		fan.FailWith(nil)
+		f.minute(hot)
+
+		if fan.GetSwitchData().State != device.SwitchStateOn {
+			t.Errorf("the fan is %v at %s", fan.GetSwitchData().State, time.Now().Format("15:04"))
+		}
+
+		if _, cleared := f.container.alerts(); len(cleared) == 0 {
+			t.Errorf("the alert was not cleared")
 		}
 
 		f.stop()

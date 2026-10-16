@@ -226,6 +226,14 @@ func (p *plugin) report(event schedule.Event) {
 		if event.Manual || event.Attempts == 1 || event.Attempts%10 == 0 {
 			fmt.Printf("%T unable to run %q%s (attempt %d): %s\n", p, event.Name, how, event.Attempts, event.Error)
 		}
+
+		// One that is run every minute never gives up, so an alert has to come before then, or never would: when it has
+		// failed enough times in a row. Once, since the alert stays until it works. A run by hand has no attempts, so it never counts.
+		if threshold := p.config.alertAfterFailures(); threshold > 0 && event.Attempts == threshold {
+			p.sendAlert(alert.Raise(p.container, p.ShortName(), alertKey(event.ID), alert.SeverityWarning,
+				fmt.Sprintf("Automation is failing: %s", event.Name),
+				fmt.Sprintf("It has failed %d times in a row, and is still being tried. Latest error: %s", event.Attempts, event.Error)))
+		}
 	case schedule.OutcomeGaveUp:
 		fmt.Printf("%T gave up on %q after %d attempts: %s\n", p, event.Name, event.Attempts, event.Error)
 
