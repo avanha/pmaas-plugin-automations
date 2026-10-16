@@ -3,6 +3,7 @@ package automations
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"reflect"
@@ -45,6 +46,7 @@ type fakeContainer struct {
 	saved        []config.PersistentConfigV1
 	persisted    *config.PersistentConfigV1
 	broadcasts   []any
+	broadcastAt  []time.Time
 
 	routes        map[string]*spi.HttpHandlerOptions
 	jsonRoutes    []string
@@ -141,6 +143,7 @@ func (c *fakeContainer) BroadcastEvent(_ string, event any) error {
 	defer c.mu.Unlock()
 
 	c.broadcasts = append(c.broadcasts, event)
+	c.broadcastAt = append(c.broadcastAt, time.Now())
 
 	return nil
 }
@@ -1050,5 +1053,69 @@ func TestAlerts_APluginMadeFromTheConfigurationSharesItsAlerts(t *testing.T) {
 
 	if err := alert.Raise(alerts, "automations", "k", alert.SeverityInfo, "t", "m"); err != nil {
 		t.Errorf("an alert broadcaster taken before the plugin was made: %v", err)
+	}
+}
+
+// alertEntry is one alert event as it happened.
+type alertEntry struct {
+	at       time.Time
+	cleared  bool
+	key      string
+	severity alert.Severity
+	title    string
+}
+
+func (e alertEntry) String() string {
+	if e.cleared {
+		return fmt.Sprintf("%s cleared %s", e.at.Format("15:04"), e.key)
+	}
+
+	return fmt.Sprintf("%s %s %s", e.at.Format("15:04"), e.severity, e.key)
+}
+
+// alertLog is the alerts raised and cleared, in order, with when.
+func (c *fakeContainer) alertLog() []alertEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var log []alertEntry
+
+	for i, b := range c.broadcasts {
+		switch e := b.(type) {
+		case alert.RaisedEvent:
+			log = append(log, alertEntry{at: c.broadcastAt[i], key: e.Key, severity: e.Severity, title: e.Title})
+		case alert.ClearedEvent:
+			log = append(log, alertEntry{at: c.broadcastAt[i], cleared: true, key: e.Key})
+		}
+	}
+
+	return log
+}
+
+func TestSuccess_ClearsOnlyAnAlertThatWasRaisedNotOneThatNeverWas(t *testing.T) {
+	f := newFixture(t, stateBefore(at(0, 0)), at(17, 0), at(17, 0).Add(24*time.Hour))
+	f.a.catchUp = time.Hour
+	f.setNow(at(16, 59))
+	f.start()
+
+	// An automation that has never failed runs, and there is nothing to clear.
+	f.minute(at(17, 0))
+
+	if _, cleared := f.container.alerts(); len(cleared) != 0 {
+		t.Fatalf("cleared an alert that was never raised: %+v", cleared)
+	}
+
+	// The next day it fails ten times, so there is an alert, and then works: that is cleared, once.
+	f.a.setFailure(errors.New("offline"))
+
+	for minute := 0; minute < 10; minute++ {
+		f.minute(at(17, minute).Add(24 * time.Hour))
+	}
+
+	f.a.setFailure(nil)
+	f.minute(at(17, 10).Add(24 * time.Hour))
+
+	if _, cleared := f.container.alerts(); len(cleared) != 1 {
+		t.Errorf("cleared %+v", cleared)
 	}
 }

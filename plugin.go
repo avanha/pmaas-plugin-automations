@@ -46,6 +46,9 @@ type plugin struct {
 	statuses  []schedule.Status
 	evaluated time.Time
 
+	// alerting is the automations the plugin has an alert up for, by ID, so that it clears only what it raised.
+	alerting map[string]bool
+
 	now func() time.Time
 }
 
@@ -53,7 +56,7 @@ type plugin struct {
 var _ spi.IPMAASPlugin = (*plugin)(nil)
 
 func NewPlugin(config PluginConfig) Plugin {
-	return &plugin{config: config, httpHandler: httphandler.NewHandler(), now: time.Now}
+	return &plugin{config: config, httpHandler: httphandler.NewHandler(), now: time.Now, alerting: make(map[string]bool)}
 }
 
 func (p *plugin) ShortName() string {
@@ -228,8 +231,11 @@ func (p *plugin) report(event schedule.Event) {
 	case schedule.OutcomeSucceeded:
 		fmt.Printf("%T ran %q%s: %s\n", p, event.Name, how, event.Message)
 
-		// Whether or not it had failed before; clearing an alert that isn't there does nothing.
-		p.sendAlert(alert.Clear(p.container, p.ShortName(), alertKey(event.ID)))
+		// Only if it was raised: an automation that never failed has nothing to clear, and that is most of them.
+		if p.alerting[event.ID] {
+			delete(p.alerting, event.ID)
+			p.sendAlert(alert.Clear(p.container, p.ShortName(), alertKey(event.ID)))
+		}
 	case schedule.OutcomeFailed:
 		// Every minute it is tried again, which would fill the log, so only the first, and then now and then.
 		if event.Manual || event.Attempts == 1 || event.Attempts%10 == 0 {
@@ -239,6 +245,7 @@ func (p *plugin) report(event schedule.Event) {
 		// One that is run every minute never gives up, so an alert has to come before then, or never would: when it has
 		// failed enough times in a row. Once, since the alert stays until it works. A run by hand has no attempts, so it never counts.
 		if threshold := p.config.alertAfterFailures(); threshold > 0 && event.Attempts == threshold {
+			p.alerting[event.ID] = true
 			p.sendAlert(alert.Raise(p.container, p.ShortName(), alertKey(event.ID), alert.SeverityWarning,
 				fmt.Sprintf("Automation is failing: %s", event.Name),
 				fmt.Sprintf("It has failed %d times in a row, and is still being tried. Latest error: %s", event.Attempts, event.Error)))
@@ -246,6 +253,7 @@ func (p *plugin) report(event schedule.Event) {
 	case schedule.OutcomeGaveUp:
 		fmt.Printf("%T gave up on %q after %d attempts: %s\n", p, event.Name, event.Attempts, event.Error)
 
+		p.alerting[event.ID] = true
 		p.sendAlert(alert.Raise(p.container, p.ShortName(), alertKey(event.ID), alert.SeverityWarning,
 			fmt.Sprintf("Automation did not run: %s", event.Name),
 			fmt.Sprintf("It was due at %s and failed %d times: %s",

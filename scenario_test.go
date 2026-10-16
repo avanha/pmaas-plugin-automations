@@ -14,6 +14,7 @@ import (
 	"github.com/avanha/pmaas-automations/sun"
 	"github.com/avanha/pmaas-automations/trigger"
 	"github.com/avanha/pmaas-plugin-fakes/fake"
+	"github.com/avanha/pmaas-spi/alert"
 	"github.com/avanha/pmaas-spi/clock"
 	"github.com/avanha/pmaas-spi/device"
 	"github.com/avanha/pmaas-spi/events"
@@ -548,6 +549,362 @@ func TestAtticFan_AFanThatCanNotBeReachedRaisesOneAlertAndClearsItWhenItIsBack(t
 
 		if _, cleared := f.container.alerts(); len(cleared) == 0 {
 			t.Errorf("the alert was not cleared")
+		}
+
+		f.stop()
+	})
+}
+
+// --- the garage door ---
+
+var (
+	dusk = trigger.Sun(lafayette, sun.CivilDusk, 0)
+	dawn = trigger.Sun(lafayette, sun.CivilDawn, 0)
+)
+
+// doorAutomations is what test-assembly has for the garage door, over the given sensor and severity.
+func doorAutomations(door *fake.Door, severity alert.SeverityFunc) *PluginConfig {
+	conf := NewPluginConfig()
+
+	conf.Add(pmaasautomations.New(
+		"garage-door-open", "Alert when the garage door is left open",
+		trigger.Every(time.Minute),
+		pmaasautomations.WatchAlert(conf.Alerts(), "garage-door-open", "Garage door open", severity,
+			pmaasautomations.DoorOpenFor(door, 5*time.Minute)),
+		pmaasautomations.WithCatchUp(0),
+	))
+
+	conf.Add(pmaasautomations.New(
+		"garage-door-sensor-offline", "Alert when the garage door sensor is out of touch",
+		trigger.Every(time.Minute),
+		pmaasautomations.WatchAlert(conf.Alerts(), "garage-door-sensor-offline", "Garage door sensor offline",
+			alert.Always(alert.SeverityWarning), pmaasautomations.DoorSensorOffline(door, 5*time.Minute)),
+		pmaasautomations.WithCatchUp(0),
+	))
+
+	return &conf
+}
+
+func logOf(f *bubbleFixture) string {
+	return fmt.Sprint(f.container.alertLog())
+}
+
+func TestGarageDoor_OpenedInTheDayIsAWarningAfterFiveMinutesAndCriticalOnceItIsDark(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		door := fake.NewDoor("Garage door", device.DoorPositionClosed)
+		f := startInBubble(t, doorAutomations(door, pmaasautomations.SeverityBetween(dusk, dawn, alert.SeverityCritical, alert.SeverityWarning)), nil)
+
+		for time.Now().Before(hm(midnight, 9, 59)) {
+			f.minute(nil)
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionOpen) }) // 10:00
+
+		// Four minutes: nothing. Five: the alert.
+		for time.Now().Before(hm(midnight, 10, 4)) {
+			f.minute(nil)
+		}
+
+		if log := f.container.alertLog(); len(log) != 0 {
+			t.Fatalf("an alert after four minutes: %v", log)
+		}
+
+		f.minute(nil) // 10:05
+
+		log := f.container.alertLog()
+		if len(log) != 1 || log[0].key != "watch:garage-door-open" || log[0].severity != alert.SeverityWarning ||
+			!log[0].at.Equal(hm(midnight, 10, 5)) || log[0].title != "Garage door open" {
+			t.Fatalf("at 10:05: %v", log)
+		}
+
+		// All day it stays the one alert. Civil dusk on the longest day is 9:06pm; at that minute it becomes critical.
+		for time.Now().Before(hm(midnight, 21, 5)) {
+			f.minute(nil)
+		}
+
+		if len(f.container.alertLog()) != 1 {
+			t.Fatalf("by 21:05: %s", logOf(f))
+		}
+
+		f.minute(nil) // 21:06
+
+		log = f.container.alertLog()
+		if len(log) != 2 || log[1].severity != alert.SeverityCritical || log[1].key != log[0].key || !log[1].at.Equal(hm(midnight, 21, 6)) {
+			t.Fatalf("at dusk: %s", logOf(f))
+		}
+
+		// It closes at 10pm: cleared that minute.
+		for time.Now().Before(hm(midnight, 21, 59)) {
+			f.minute(nil)
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionClosed) }) // 22:00
+
+		log = f.container.alertLog()
+		if len(log) != 3 || !log[2].cleared || log[2].key != log[0].key || !log[2].at.Equal(hm(midnight, 22, 0)) {
+			t.Fatalf("on closing: %s", logOf(f))
+		}
+
+		// And nothing else for the rest of the day.
+		for time.Now().Before(midnight.Add(24 * time.Hour)) {
+			f.minute(nil)
+		}
+
+		if len(f.container.alertLog()) != 3 {
+			t.Errorf("more alerts: %s", logOf(f))
+		}
+
+		f.stop()
+	})
+}
+
+func TestGarageDoor_OpenedInTheNightIsCriticalAtOnceAndEasesWhenItGetsLight(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		door := fake.NewDoor("Garage door", device.DoorPositionClosed)
+		f := startInBubble(t, doorAutomations(door, pmaasautomations.SeverityBetween(dusk, dawn, alert.SeverityCritical, alert.SeverityWarning)), nil)
+
+		for time.Now().Before(hm(midnight, 1, 59)) {
+			f.minute(nil)
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionOpen) }) // 02:00
+
+		for time.Now().Before(hm(midnight, 5, 30)) {
+			f.minute(nil)
+		}
+
+		// Critical at 2:05, and easing at civil dawn, 4:59am on the longest day.
+		log := f.container.alertLog()
+		if len(log) != 2 || log[0].severity != alert.SeverityCritical || !log[0].at.Equal(hm(midnight, 2, 5)) ||
+			log[1].severity != alert.SeverityWarning || !log[1].at.Equal(hm(midnight, 4, 59)) {
+			t.Fatalf("log: %s", logOf(f))
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionClosed) })
+
+		if log := f.container.alertLog(); len(log) != 3 || !log[2].cleared {
+			t.Errorf("on closing: %s", logOf(f))
+		}
+
+		f.stop()
+	})
+}
+
+func TestGarageDoor_ByTheClockAnAlertOpenedBeforeElevenEscalatesAtEleven(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		door := fake.NewDoor("Garage door", device.DoorPositionClosed)
+		severity := alert.ByTimeOfDay(alert.SeverityWarning, 7, 0, 23, 0, alert.SeverityCritical)
+		f := startInBubble(t, doorAutomations(door, severity), nil)
+
+		for time.Now().Before(hm(midnight, 22, 49)) {
+			f.minute(nil)
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionOpen) }) // 22:50
+
+		for time.Now().Before(hm(midnight, 23, 2)) {
+			f.minute(nil)
+		}
+
+		want := "[22:55 warning watch:garage-door-open 23:00 critical watch:garage-door-open]"
+		if got := logOf(f); got != want {
+			t.Errorf("log %s, want %s", got, want)
+		}
+
+		// At seven in the morning it eases to a warning.
+		for time.Now().Before(hm(midnight.AddDate(0, 0, 1), 7, 1)) {
+			f.minute(nil)
+		}
+
+		if log := f.container.alertLog(); len(log) != 3 || log[2].severity != alert.SeverityWarning || log[2].at.Hour() != 7 || log[2].at.Minute() != 0 {
+			t.Errorf("after 7am: %s", logOf(f))
+		}
+
+		f.stop()
+	})
+}
+
+func TestGarageDoor_AnOpeningShorterThanFiveMinutesRaisesNothing(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		door := fake.NewDoor("Garage door", device.DoorPositionClosed)
+		f := startInBubble(t, doorAutomations(door, alert.Always(alert.SeverityWarning)), nil)
+
+		for time.Now().Before(hm(midnight, 11, 59)) {
+			f.minute(nil)
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionOpen) }) // 12:00
+
+		for range 4 {
+			f.minute(nil) // 12:01 .. 12:04
+		}
+
+		// Closed at 12:05, which is before that minute is looked at: it was open for four minutes when last looked at.
+		f.minute(func(time.Time) { door.Report(device.DoorPositionClosed) }) // 12:05
+
+		for range 30 {
+			f.minute(nil)
+		}
+
+		if log := f.container.alertLog(); len(log) != 0 {
+			t.Errorf("alerts for a door open four minutes: %s", logOf(f))
+		}
+
+		f.stop()
+	})
+}
+
+func TestGarageDoor_AnOfflineSensorHoldsTheAlertAndHasAnAlertOfItsOwn(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		door := fake.NewDoor("Garage door", device.DoorPositionClosed)
+		f := startInBubble(t, doorAutomations(door, alert.Always(alert.SeverityWarning)), nil)
+
+		for time.Now().Before(hm(midnight, 9, 59)) {
+			f.minute(nil)
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionOpen) }) // 10:00
+
+		for time.Now().Before(hm(midnight, 10, 10)) {
+			f.minute(nil)
+		}
+
+		// The door alert is up. The sensor loses touch at 10:10, and the door is closed in the meantime, which no one hears.
+		f.minute(func(time.Time) { door.SetOffline(true) }) // 10:11 is the first minute it is offline; offline since 10:11
+
+		offlineSince := time.Now()
+
+		for time.Now().Before(offlineSince.Add(4 * time.Minute)) {
+			f.minute(nil)
+		}
+
+		// Four minutes offline: the door alert is held, not cleared, and there is no sensor alert yet.
+		if got := logOf(f); got != "[10:05 warning watch:garage-door-open]" {
+			t.Fatalf("while briefly offline: %s", got)
+		}
+
+		f.minute(nil) // five minutes offline
+
+		log := f.container.alertLog()
+		if len(log) != 2 || log[1].key != "watch:garage-door-sensor-offline" || log[1].severity != alert.SeverityWarning ||
+			log[1].title != "Garage door sensor offline" || !log[1].at.Equal(offlineSince.Add(5*time.Minute)) {
+			t.Fatalf("after five minutes offline: %s", logOf(f))
+		}
+
+		// An hour offline: still the two, nothing cleared by a sensor that can't be heard.
+		for range 60 {
+			f.minute(nil)
+		}
+
+		if len(f.container.alertLog()) != 2 {
+			t.Fatalf("while offline: %s", logOf(f))
+		}
+
+		// It comes back, and says the door is closed: both alerts clear.
+		f.minute(func(time.Time) {
+			door.SetOffline(false)
+			door.Report(device.DoorPositionClosed)
+		})
+
+		log = f.container.alertLog()
+		cleared := 0
+
+		for _, e := range log {
+			if e.cleared {
+				cleared++
+			}
+		}
+
+		if len(log) != 4 || cleared != 2 {
+			t.Errorf("after it came back: %s", logOf(f))
+		}
+
+		f.stop()
+	})
+}
+
+func TestGarageDoor_ADoorFoundOpenWhenTheServerStartsIsAlertedAboutFiveMinutesLater(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		// The sensor has only reported the door open, since the server was not running: it never saw it open.
+		door := fake.NewDoor("Garage door", device.DoorPositionUnknown)
+		door.Report(device.DoorPositionOpen)
+
+		time.Sleep(time.Until(hm(midnight, 12, 0)))
+
+		f := startInBubble(t, doorAutomations(door, alert.Always(alert.SeverityWarning)), nil)
+
+		// The server started at 12:00. An automation is first run a minute after that, so the door is first looked at at 12:01,
+		// and five minutes of being open are counted from then.
+		for time.Now().Before(hm(midnight, 12, 5)) {
+			f.minute(nil)
+		}
+
+		if len(f.container.alertLog()) != 0 {
+			t.Fatalf("an alert at 12:05, only four minutes after the door was first seen open: %s", logOf(f))
+		}
+
+		f.minute(nil) // 12:06
+
+		if log := f.container.alertLog(); len(log) != 1 || !log[0].at.Equal(hm(midnight, 12, 6)) {
+			t.Errorf("log: %s", logOf(f))
+		}
+
+		f.stop()
+	})
+}
+
+func TestGarageDoor_ARestartWhileTheAlertIsUpRaisesItAgainOnceAndTheDoorClosingStillClearsIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		midnight, _ := inColorado(t, 2000, time.June, 21)
+
+		door := fake.NewDoor("Garage door", device.DoorPositionClosed)
+		severity := alert.Always(alert.SeverityWarning)
+		f := startInBubble(t, doorAutomations(door, severity), nil)
+
+		for time.Now().Before(hm(midnight, 9, 59)) {
+			f.minute(nil)
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionOpen) })
+
+		for time.Now().Before(hm(midnight, 10, 30)) {
+			f.minute(nil)
+		}
+
+		if len(f.container.alertLog()) != 1 {
+			t.Fatalf("before the restart: %s", logOf(f))
+		}
+
+		// The server restarts. Nothing remembers that the alert was up, so it is raised again, once.
+		f.stop()
+		before := len(f.container.alertLog())
+
+		f = startInBubble(t, doorAutomations(door, severity), f.container)
+
+		for range 20 {
+			f.minute(nil)
+		}
+
+		if got := len(f.container.alertLog()); got != 1 {
+			t.Fatalf("after the restart there are %d alert events (%d before): %s", got, before, logOf(f))
+		}
+
+		f.minute(func(time.Time) { door.Report(device.DoorPositionClosed) })
+
+		if log := f.container.alertLog(); len(log) != 2 || !log[1].cleared {
+			t.Errorf("on closing: %s", logOf(f))
 		}
 
 		f.stop()
