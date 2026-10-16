@@ -997,3 +997,58 @@ func TestFailing_AFailureByHandIsNotCountedTowardTheAlert(t *testing.T) {
 		t.Errorf("raised %+v", raised)
 	}
 }
+
+func TestAlerts_WorkFromWhenThePluginHasStartedUntilItStops(t *testing.T) {
+	f := newFixture(t, nil)
+	broadcaster := f.plugin.config.Alerts()
+
+	// Taken while configuring, before the plugin is made: the assembly's copy of the configuration is the one the plugin has.
+	if err := broadcaster.BroadcastEvent("automations", alert.RaisedEvent{Source: "automations", Key: "k"}); !errors.Is(err, errAlertsNotAvailable) {
+		t.Fatalf("before the plugin started: %v", err)
+	}
+
+	f.start()
+
+	if err := alert.Raise(broadcaster, "automations", "k", alert.SeverityWarning, "title", "message"); err != nil {
+		t.Fatalf("while running: %v", err)
+	}
+
+	raised, _ := f.container.alerts()
+	if len(raised) != 1 || raised[0].Key != "k" || raised[0].Title != "title" {
+		t.Errorf("raised %+v", raised)
+	}
+
+	<-f.plugin.Stop()
+
+	if err := alert.Clear(broadcaster, "automations", "k"); !errors.Is(err, errAlertsNotAvailable) {
+		t.Errorf("after the plugin stopped: %v", err)
+	}
+}
+
+func TestAlerts_AreTheSameOneEachTimeAndWorkForAConfigurationNotMadeWithNew(t *testing.T) {
+	var zero PluginConfig
+
+	first, second := zero.Alerts(), zero.Alerts()
+	if first != second || first == nil {
+		t.Errorf("%v %v", first, second)
+	}
+
+	// A plugin made from a configuration whose alerts were never asked for has none to set.
+	f := newFixture(t, nil)
+	f.start()
+	<-f.plugin.Stop()
+}
+
+func TestAlerts_APluginMadeFromTheConfigurationSharesItsAlerts(t *testing.T) {
+	container := newFakeContainer(t)
+	conf := NewPluginConfig()
+	alerts := conf.Alerts()
+	conf.Add(&fakeAutomation{id: "a", trigger: scripted{}, container: container})
+
+	p := NewPlugin(conf).(*plugin)
+	p.Init(container)
+
+	if err := alert.Raise(alerts, "automations", "k", alert.SeverityInfo, "t", "m"); err != nil {
+		t.Errorf("an alert broadcaster taken before the plugin was made: %v", err)
+	}
+}

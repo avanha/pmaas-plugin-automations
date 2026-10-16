@@ -1,8 +1,11 @@
 package automations
 
 import (
+	"errors"
 	"fmt"
+	"sync"
 
+	"github.com/avanha/pmaas-spi/alert"
 	"github.com/avanha/pmaas-spi/automation"
 )
 
@@ -21,6 +24,7 @@ type PluginConfig struct {
 
 	automations []automation.Automation
 	ids         map[string]bool
+	alerts      *alertBroadcaster
 }
 
 func NewPluginConfig() PluginConfig {
@@ -59,4 +63,43 @@ func (c *PluginConfig) Add(a automation.Automation) {
 
 	c.ids[a.ID()] = true
 	c.automations = append(c.automations, a)
+}
+
+var errAlertsNotAvailable = errors.New("the automations plugin is not running, so it can't send alerts")
+
+// alertBroadcaster is how an automation raises an alert: it sends what it is given to the server's event manager, through
+// the plugin's container, once the plugin has started, and says it can't before then and after it has stopped.
+type alertBroadcaster struct {
+	mu          sync.Mutex
+	broadcaster alert.Broadcaster
+}
+
+func (b *alertBroadcaster) BroadcastEvent(entityEventId string, event any) error {
+	b.mu.Lock()
+	broadcaster := b.broadcaster
+	b.mu.Unlock()
+
+	if broadcaster == nil {
+		return errAlertsNotAvailable
+	}
+
+	return broadcaster.BroadcastEvent(entityEventId, event)
+}
+
+func (b *alertBroadcaster) set(broadcaster alert.Broadcaster) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.broadcaster = broadcaster
+}
+
+// Alerts is where an automation sends the alerts it raises (see automations.WatchAlert in pmaas-automations). It is
+// usable from the moment it is made, so it can be given to an automation while the assembly is configured: until the plugin
+// has started, and after it has stopped, sending to it fails. Every call returns the same one.
+func (c *PluginConfig) Alerts() alert.Broadcaster {
+	if c.alerts == nil {
+		c.alerts = &alertBroadcaster{}
+	}
+
+	return c.alerts
 }

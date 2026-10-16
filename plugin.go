@@ -70,6 +70,11 @@ func (p *plugin) Init(container spi.IPMAASContainer) {
 	}
 
 	p.schedule = s
+
+	if p.config.alerts != nil {
+		p.config.alerts.set(container)
+	}
+
 	p.httpHandler.Init(container, &automationStoreAdapter{parent: p})
 }
 
@@ -101,6 +106,10 @@ func (p *plugin) Stop() chan func() {
 	fmt.Printf("%T Stopping...\n", p)
 
 	p.stopping.Store(true)
+
+	if p.config.alerts != nil {
+		p.config.alerts.set(nil)
+	}
 
 	if p.receiverRegistered {
 		p.receiverRegistered = false
