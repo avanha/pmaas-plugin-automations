@@ -3,6 +3,7 @@ package http
 import (
 	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
 	"path"
 	"strconv"
@@ -164,7 +165,7 @@ func TestRunRequest(t *testing.T) {
 
 	t.Run("runs it and says how it went", func(t *testing.T) {
 		store := &fakeStore{result: common.RunResult{Succeeded: true, Message: "turned on Porch"}}
-		h := &Handler{store: store}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 		response, err := h.handleHttpRunRequest(nil, post, &runRequest{ID: "lights"})
 		if err != nil {
@@ -183,7 +184,7 @@ func TestRunRequest(t *testing.T) {
 
 	t.Run("an automation that failed is a response, not an error", func(t *testing.T) {
 		store := &fakeStore{result: common.RunResult{Error: "the plug is offline"}}
-		h := &Handler{store: store}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 		response, err := h.handleHttpRunRequest(nil, post, &runRequest{ID: "lights"})
 		if err != nil || response.(runResponse).Error != "the plug is offline" || response.(runResponse).Succeeded {
@@ -193,7 +194,7 @@ func TestRunRequest(t *testing.T) {
 
 	t.Run("only POST", func(t *testing.T) {
 		store := &fakeStore{}
-		h := &Handler{store: store}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 		if _, err := h.handleHttpRunRequest(nil, &http.Request{Method: http.MethodGet}, &runRequest{ID: "lights"}); err == nil {
 			t.Error("a GET was accepted")
@@ -207,7 +208,7 @@ func TestRunRequest(t *testing.T) {
 	t.Run("needs an ID", func(t *testing.T) {
 		for _, body := range []any{&runRequest{}, nil, "not a request"} {
 			store := &fakeStore{}
-			h := &Handler{store: store}
+			h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 			if _, err := h.handleHttpRunRequest(nil, post, body); err == nil {
 				t.Errorf("%v was accepted", body)
@@ -220,7 +221,7 @@ func TestRunRequest(t *testing.T) {
 	})
 
 	t.Run("what went wrong inside is not told to the browser", func(t *testing.T) {
-		h := &Handler{store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
 
 		_, err := h.handleHttpRunRequest(nil, post, &runRequest{ID: "lights"})
 		if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "/var") {
@@ -286,7 +287,7 @@ func TestRearmRequest(t *testing.T) {
 
 	t.Run("re-enables it and says so", func(t *testing.T) {
 		store := &fakeStore{rearm: common.RearmResult{Armed: true}}
-		h := &Handler{store: store}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 		response, err := h.handleHttpRearmRequest(nil, post, &runRequest{ID: "fan"})
 		if err != nil || !response.(rearmResponse).Armed {
@@ -299,7 +300,7 @@ func TestRearmRequest(t *testing.T) {
 	})
 
 	t.Run("not being able to is a response with the reason, not an error", func(t *testing.T) {
-		h := &Handler{store: &fakeStore{rearm: common.RearmResult{Why: "its time has passed"}}}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: &fakeStore{rearm: common.RearmResult{Why: "its time has passed"}}}
 
 		response, err := h.handleHttpRearmRequest(nil, post, &runRequest{ID: "fan"})
 		if err != nil || response.(rearmResponse).Armed || response.(rearmResponse).Why != "its time has passed" {
@@ -309,7 +310,7 @@ func TestRearmRequest(t *testing.T) {
 
 	t.Run("only POST, and an ID", func(t *testing.T) {
 		store := &fakeStore{}
-		h := &Handler{store: store}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 		if _, err := h.handleHttpRearmRequest(nil, &http.Request{Method: http.MethodGet}, &runRequest{ID: "fan"}); err == nil {
 			t.Error("a GET was accepted")
@@ -327,7 +328,7 @@ func TestRearmRequest(t *testing.T) {
 	})
 
 	t.Run("what went wrong inside is not told to the browser", func(t *testing.T) {
-		h := &Handler{store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
 
 		_, err := h.handleHttpRearmRequest(nil, post, &runRequest{ID: "fan"})
 		if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "/var") {
@@ -364,7 +365,7 @@ func TestPauseRequest(t *testing.T) {
 
 	t.Run("pauses and resumes", func(t *testing.T) {
 		store := &fakeStore{}
-		h := &Handler{store: store}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 		for _, paused := range []bool{true, false} {
 			response, err := h.handleHttpPauseRequest(nil, post, &pauseRequest{ID: "fan", Paused: paused})
@@ -380,7 +381,7 @@ func TestPauseRequest(t *testing.T) {
 
 	t.Run("only POST, and an ID", func(t *testing.T) {
 		store := &fakeStore{}
-		h := &Handler{store: store}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: store}
 
 		if _, err := h.handleHttpPauseRequest(nil, &http.Request{Method: http.MethodGet}, &pauseRequest{ID: "fan"}); err == nil {
 			t.Error("a GET was accepted")
@@ -398,7 +399,7 @@ func TestPauseRequest(t *testing.T) {
 	})
 
 	t.Run("what went wrong inside is not told to the browser", func(t *testing.T) {
-		h := &Handler{store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
+		h := &Handler{log: slog.New(slog.DiscardHandler), store: &fakeStore{err: errors.New("secret internal detail: /var/pmaas/db")}}
 
 		_, err := h.handleHttpPauseRequest(nil, post, &pauseRequest{ID: "fan", Paused: true})
 		if err == nil || strings.Contains(err.Error(), "secret") {

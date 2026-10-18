@@ -3,6 +3,8 @@ package automations
 import (
 	"errors"
 	"fmt"
+	"github.com/avanha/pmaas-spi/logging"
+	"log/slog"
 	"reflect"
 	"sync/atomic"
 	"time"
@@ -28,6 +30,7 @@ type Plugin interface {
 // belongs to it. The plugin's own goroutine owns what is shown and what is kept: after the server's goroutine has
 // evaluated the schedule it hands over a copy of how things stand.
 type plugin struct {
+	log         *slog.Logger
 	config      PluginConfig
 	container   spi.IPMAASContainer
 	httpHandler *httphandler.Handler
@@ -71,6 +74,7 @@ func (p *plugin) ShortName() string {
 
 func (p *plugin) Init(container spi.IPMAASContainer) {
 	p.container = container
+	p.log = logging.For(container)
 
 	s, err := schedule.New(p.config.automations)
 	if err != nil {
@@ -95,7 +99,7 @@ func (p *plugin) Init(container spi.IPMAASContainer) {
 }
 
 func (p *plugin) Start() {
-	fmt.Printf("%T Starting with %d automation(s) and %d event-driven one(s)...\n", p, len(p.config.automations), len(p.config.reactions))
+	p.log.Info("starting", "automations", len(p.config.automations), "eventDriven", len(p.config.reactions))
 
 	states := p.loadPersistedState()
 
@@ -124,12 +128,12 @@ func (p *plugin) Start() {
 		p.evaluate(p.now())
 	}})
 	if err != nil {
-		fmt.Printf("%T unable to start the schedule: %v\n", p, err)
+		p.log.Error("unable to start the schedule", "error", err)
 	}
 }
 
 func (p *plugin) Stop() chan func() {
-	fmt.Printf("%T Stopping...\n", p)
+	p.log.Info("stopping")
 
 	p.stopping.Store(true)
 
@@ -141,7 +145,7 @@ func (p *plugin) Stop() chan func() {
 		p.receiverRegistered = false
 
 		if err := p.container.DeregisterEventReceiver(p.receiverHandle); err != nil {
-			fmt.Printf("%T unable to deregister the clock event receiver: %v\n", p, err)
+			p.log.Error("unable to deregister the clock event receiver", "error", err)
 		}
 	}
 
@@ -149,7 +153,7 @@ func (p *plugin) Stop() chan func() {
 		p.reactionReceiverRegistered = false
 
 		if err := p.container.DeregisterEventReceiver(p.reactionReceiver); err != nil {
-			fmt.Printf("%T unable to deregister the receiver of the events automations wait for: %v\n", p, err)
+			p.log.Error("unable to deregister the receiver of the events automations wait for", "error", err)
 		}
 	}
 
@@ -252,7 +256,7 @@ func (p *plugin) setPaused(id string, paused bool) error {
 		// A paused automation is not going to run, so an alert that it did not would never clear.
 		err := p.container.EnqueueOnPluginGoRoutine(func() { p.clearAlert(id) })
 		if err != nil {
-			fmt.Printf("%T unable to clear the alert for %q: %v\n", p, id, err)
+			p.log.Error("unable to clear the alert", "automation", id, "error", err)
 		}
 	}
 
@@ -309,7 +313,7 @@ func (p *plugin) publish(now time.Time, events []schedule.Event, changed bool) {
 
 	err := p.container.EnqueueOnPluginGoRoutine(func() { p.apply(now, statuses, states, events) })
 	if err != nil {
-		fmt.Printf("%T unable to report how the automations are getting on: %v\n", p, err)
+		p.log.Error("unable to report how the automations are getting on", "error", err)
 	}
 }
 
@@ -343,14 +347,14 @@ func (p *plugin) report(event schedule.Event) {
 
 	switch event.Outcome {
 	case schedule.OutcomeSucceeded:
-		fmt.Printf("%T ran %q%s: %s\n", p, event.Name, how, event.Message)
+		p.log.Info("ran", "automation", event.Name, "how", how, "message", event.Message)
 
 		// Only if it was raised: an automation that never failed has nothing to clear, and that is most of them.
 		p.clearAlert(event.ID)
 	case schedule.OutcomeFailed:
 		// Every minute it is tried again, which would fill the log, so only the first, and then now and then.
 		if event.Manual || event.Attempts == 1 || event.Attempts%10 == 0 {
-			fmt.Printf("%T unable to run %q%s (attempt %d): %s\n", p, event.Name, how, event.Attempts, event.Error)
+			p.log.Error("unable to run", "automation", event.Name, "how", how, "attempts", event.Attempts, "error", event.Error)
 		}
 
 		// One that is run every minute never gives up, so an alert has to come before then, or never would: when it has
@@ -362,7 +366,7 @@ func (p *plugin) report(event schedule.Event) {
 				fmt.Sprintf("It has failed %d times in a row, and is still being tried. Latest error: %s", event.Attempts, event.Error)))
 		}
 	case schedule.OutcomeGaveUp:
-		fmt.Printf("%T gave up on %q after %d attempts: %s\n", p, event.Name, event.Attempts, event.Error)
+		p.log.Error("gave up", "automation", event.Name, "attempts", event.Attempts, "error", event.Error)
 
 		p.alerting[event.ID] = true
 		p.sendAlert(alert.Raise(p.container, p.ShortName(), alertKey(event.ID), alert.SeverityWarning,
@@ -370,15 +374,13 @@ func (p *plugin) report(event schedule.Event) {
 			fmt.Sprintf("It was due at %s and failed %d times: %s",
 				event.Due.Format("2006-01-02 3:04 PM"), event.Attempts, event.Error)))
 	case schedule.OutcomeMissed:
-		fmt.Printf("%T missed %q, which was due at %s, too long ago to run now\n",
-			p, event.Name, event.Due.Format("2006-01-02 3:04 PM"))
+		p.log.Warn("missed, too long ago to run now", "automation", event.Name, "due", event.Due.Format("2006-01-02 3:04 PM"))
 	case schedule.OutcomeExpired:
 		// It was waiting for something that didn't happen. That's not a failure, so it isn't an alert.
-		fmt.Printf("%T %q was still waiting when its time ran out (it was due at %s): %s\n",
-			p, event.Name, event.Due.Format("2006-01-02 3:04 PM"), event.Message)
+		p.log.Warn("was still waiting when its time ran out", "automation", event.Name, "due", event.Due.Format("2006-01-02 3:04 PM"), "message", event.Message)
 	case schedule.OutcomeWaiting:
 		// Only a run by hand is reported: the waiting that is asked about every minute is not news.
-		fmt.Printf("%T %q%s is not ready: %s\n", p, event.Name, how, event.Message)
+		p.log.Debug("not ready", "automation", event.Name, "how", how, "message", event.Message)
 	}
 }
 
@@ -387,10 +389,10 @@ func (p *plugin) report(event schedule.Event) {
 func (p *plugin) reportReaction(event schedule.Event, how string) {
 	switch event.Outcome {
 	case schedule.OutcomeSucceeded:
-		fmt.Printf("%T ran %q%s: %s\n", p, event.Name, how, event.Message)
+		p.log.Info("ran", "automation", event.Name, "how", how, "message", event.Message)
 		p.clearAlert(event.ID)
 	case schedule.OutcomeFailed:
-		fmt.Printf("%T unable to run %q%s: %s\n", p, event.Name, how, event.Error)
+		p.log.Error("unable to run", "automation", event.Name, "how", how, "error", event.Error)
 
 		// A person pressed a button and nothing happened. A run by hand is a person looking at the page, who sees it.
 		if !event.Manual {
@@ -400,13 +402,13 @@ func (p *plugin) reportReaction(event schedule.Event, how string) {
 				fmt.Sprintf("It was run by an event, and failed: %s", event.Error)))
 		}
 	case schedule.OutcomeExpired:
-		fmt.Printf("%T %q%s was not run: %s\n", p, event.Name, how, event.Message)
+		p.log.Debug("not run", "automation", event.Name, "how", how, "message", event.Message)
 	}
 }
 
 func (p *plugin) sendAlert(err error) {
 	if err != nil {
-		fmt.Printf("%T unable to send an alert: %v\n", p, err)
+		p.log.Error("unable to send an alert", "error", err)
 	}
 }
 
@@ -423,7 +425,7 @@ func (p *plugin) persist(states map[string]schedule.State) {
 	}
 
 	if err := p.container.SaveConfig(persisted); err != nil {
-		fmt.Printf("%T unable to keep how the automations have got on: %v\n", p, err)
+		p.log.Error("unable to keep how the automations have got on", "error", err)
 	}
 }
 

@@ -4,8 +4,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"github.com/avanha/pmaas-spi/logging"
 	"html/template"
 	"io"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"time"
@@ -31,6 +33,7 @@ var automationsTemplate = spi.TemplateInfo{
 
 // Handler owns the plugin's HTTP surface: the page that shows the automations, and the route that runs one by hand.
 type Handler struct {
+	log       *slog.Logger
 	container spi.IPMAASContainer
 	store     common.AutomationStore
 }
@@ -41,6 +44,7 @@ func NewHandler() *Handler {
 
 func (h *Handler) Init(container spi.IPMAASContainer, store common.AutomationStore) {
 	h.container = container
+	h.log = logging.For(container, "http")
 	h.store = store
 
 	container.ProvideContentFS(&contentFS, "content")
@@ -70,7 +74,7 @@ func (h *Handler) handleHttpListRequest(w http.ResponseWriter, r *http.Request) 
 	automations, err := h.store.GetAutomations()
 
 	if err != nil {
-		fmt.Printf("automations.http handleHttpListRequest: unable to retrieve automations: %v\n", err)
+		h.log.Error("unable to retrieve automations", "error", err)
 		automations = data.Automations{}
 	}
 
@@ -103,7 +107,7 @@ func (h *Handler) handleHttpRunRequest(_ http.ResponseWriter, r *http.Request, r
 
 	if err != nil {
 		// What is wrong with the request is for the person who made it; everything else is in the log.
-		fmt.Printf("automations.http: unable to run %q: %v\n", body.ID, err)
+		h.log.Error("unable to run", "id", body.ID, "error", err)
 
 		return nil, errors.New("unable to run it")
 	}
@@ -134,7 +138,7 @@ func (h *Handler) handleHttpPauseRequest(_ http.ResponseWriter, r *http.Request,
 	}
 
 	if err := h.store.SetPaused(body.ID, body.Paused); err != nil {
-		fmt.Printf("automations.http: unable to set paused=%v for %q: %v\n", body.Paused, body.ID, err)
+		h.log.Error("unable to set paused", "paused", body.Paused, "id", body.ID, "error", err)
 
 		return nil, errors.New("unable to pause or resume it")
 	}
@@ -163,7 +167,7 @@ func (h *Handler) handleHttpRearmRequest(_ http.ResponseWriter, r *http.Request,
 
 	if err != nil {
 		// What is wrong with the request is for the person who made it; everything else is in the log.
-		fmt.Printf("automations.http: unable to re-enable %q: %v\n", body.ID, err)
+		h.log.Error("unable to re-enable", "id", body.ID, "error", err)
 
 		return nil, errors.New("unable to re-enable it")
 	}
