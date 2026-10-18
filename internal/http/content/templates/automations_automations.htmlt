@@ -15,15 +15,19 @@
                 {{end}}
                 <div class="details">
                     <div><span class="label">When</span> {{.Trigger | html}}</div>
+                    {{if .EventDriven}}
+                        {{if .Paused}}<div><span class="label">Next</span> paused, so it won't run</div>{{end}}
+                    {{else}}
                     <div>
                         <span class="label">Next</span>
                         {{if .Paused}}paused, so it won't run{{else if .HasNext}}{{.Next.Format "Mon 2006-01-02 3:04 PM"}} ({{UntilTime .Next}}){{else}}not due in the next year{{end}}
                     </div>
+                    {{end}}
                     <div>
                         <span class="label">Last run</span>
                         {{if .LastRun.IsZero}}never{{else}}{{.LastRun.Format "2006-01-02 3:04:05 PM"}} ({{RelativeTime .LastRun}}){{if .Manual}}, by hand{{end}}{{end}}
                     </div>
-                    <div><span class="label">Catches up</span> {{.CatchUp | html}}</div>
+                    {{if not .EventDriven}}<div><span class="label">Catches up</span> {{.CatchUp | html}}</div>{{end}}
                 </div>
                 {{if .Message}}
                     <div class="message">{{.Message | html}}</div>

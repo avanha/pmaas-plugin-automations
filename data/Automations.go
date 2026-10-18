@@ -26,6 +26,10 @@ type Automation struct {
 
 	LastRun time.Time
 
+	// EventDriven is that the automation is due when an event happens, not at a time: Trigger says which, and it has no Next, no
+	// CatchUp and nothing to Re-enable.
+	EventDriven bool
+
 	// CanRearm is that Re-enable would do something: the time it was last due is dealt with and still worth running
 	// for.
 	CanRearm bool

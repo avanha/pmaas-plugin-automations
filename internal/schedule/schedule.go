@@ -108,6 +108,10 @@ type Event struct {
 
 	// Attempts is how many times in a row the automation has now failed.
 	Attempts int
+
+	// EventDriven is that the automation was run by an event, not by the time: there is no time it was due, and it is not
+	// tried again.
+	EventDriven bool
 }
 
 // Status is an automation as it stands, for the page.
@@ -125,6 +129,10 @@ type Status struct {
 	// CanRearm is that the time it was last due is dealt with but its catch-up has not passed, so Rearm can make it
 	// run for that time again.
 	CanRearm bool
+
+	// EventDriven is that the automation is due when an event matches, which Trigger says in words. It has no next time
+	// or catch-up.
+	EventDriven bool
 
 	State
 }

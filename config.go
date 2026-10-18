@@ -23,6 +23,7 @@ type PluginConfig struct {
 	AlertAfterFailures int
 
 	automations []automation.Automation
+	reactions   []automation.EventAutomation
 	ids         map[string]bool
 	alerts      *alertBroadcaster
 }
@@ -63,6 +64,28 @@ func (c *PluginConfig) Add(a automation.Automation) {
 
 	c.ids[a.ID()] = true
 	c.automations = append(c.automations, a)
+}
+
+// AddEvent adds an event-driven automation for the plugin to run: one that is due when an event matches, such as a button
+// being pressed (see automations.NewOnEvent in pmaas-automations). It runs the moment the event arrives, and is not tried again if
+// it fails.
+//
+// It panics, as Add does, if the automation isn't valid, or has the same ID as one already added, of either kind.
+func (c *PluginConfig) AddEvent(a automation.EventAutomation) {
+	if err := automation.ValidateEvent(a); err != nil {
+		panic(fmt.Sprintf("automations: %v", err))
+	}
+
+	if c.ids == nil {
+		c.ids = make(map[string]bool)
+	}
+
+	if c.ids[a.ID()] {
+		panic(fmt.Sprintf("automations: automation ID %q is used by more than one automation", a.ID()))
+	}
+
+	c.ids[a.ID()] = true
+	c.reactions = append(c.reactions, a)
 }
 
 var errAlertsNotAvailable = errors.New("the automations plugin is not running, so it can't send alerts")

@@ -32,8 +32,10 @@ type plugin struct {
 	container   spi.IPMAASContainer
 	httpHandler *httphandler.Handler
 
-	// schedule belongs to the server's goroutine once the plugin has started.
-	schedule *schedule.Schedule
+	// schedule and reactions belong to the server's goroutine once the plugin has started: the first is the automations that are
+	// due at a time, and the second those that are due when an event matches.
+	schedule  *schedule.Schedule
+	reactions *schedule.Reactions
 
 	// stopping is set when the plugin is told to stop, so that what is still queued for the server's goroutine does
 	// not turn the lights on while the server is shutting down.
@@ -41,6 +43,10 @@ type plugin struct {
 
 	receiverHandle     int
 	receiverRegistered bool
+
+	// reactionReceiver is the registration for the events the event-driven automations are waiting for.
+	reactionReceiver           int
+	reactionReceiverRegistered bool
 
 	// Owned by the plugin's goroutine.
 	statuses  []schedule.Status
@@ -74,6 +80,13 @@ func (p *plugin) Init(container spi.IPMAASContainer) {
 
 	p.schedule = s
 
+	r, err := schedule.NewReactions(p.config.reactions)
+	if err != nil {
+		panic(fmt.Sprintf("%T: %v", p, err))
+	}
+
+	p.reactions = r
+
 	if p.config.alerts != nil {
 		p.config.alerts.set(container)
 	}
@@ -82,7 +95,7 @@ func (p *plugin) Init(container spi.IPMAASContainer) {
 }
 
 func (p *plugin) Start() {
-	fmt.Printf("%T Starting with %d automation(s)...\n", p, len(p.config.automations))
+	fmt.Printf("%T Starting with %d automation(s) and %d event-driven one(s)...\n", p, len(p.config.automations), len(p.config.reactions))
 
 	states := p.loadPersistedState()
 
@@ -94,10 +107,20 @@ func (p *plugin) Start() {
 	p.receiverHandle = handle
 	p.receiverRegistered = true
 
+	if len(p.config.reactions) > 0 {
+		handle, err := p.container.RegisterEventReceiver(p.reactions.Wanted, p.onReactionEvent)
+		if err != nil {
+			panic(fmt.Sprintf("Unable to register for the events the event-driven automations wait for: %v", err))
+		}
+
+		p.reactionReceiver, p.reactionReceiverRegistered = handle, true
+	}
+
 	// From here the schedule belongs to the server's goroutine, so what was kept is handed to it, and it is looked at
 	// at once: an automation that was due while the server was down is run now, not at the next minute.
 	err = p.container.EnqueueOnServerGoRoutine([]func(){func() {
 		p.schedule.Restore(states)
+		p.reactions.Restore(states)
 		p.evaluate(p.now())
 	}})
 	if err != nil {
@@ -122,6 +145,14 @@ func (p *plugin) Stop() chan func() {
 		}
 	}
 
+	if p.reactionReceiverRegistered {
+		p.reactionReceiverRegistered = false
+
+		if err := p.container.DeregisterEventReceiver(p.reactionReceiver); err != nil {
+			fmt.Printf("%T unable to deregister the receiver of the events automations wait for: %v\n", p, err)
+		}
+	}
+
 	return p.container.ClosedCallbackChannel()
 }
 
@@ -141,6 +172,26 @@ func (p *plugin) onClockEvent(eventInfo *events.EventInfo) error {
 	return p.container.EnqueueOnServerGoRoutine([]func(){func() { p.evaluate(event.Time) }})
 }
 
+// onReactionEvent is told of an event some event-driven automation is waiting for, on the plugin's goroutine, and hands it to the
+// server's, in the order they came.
+func (p *plugin) onReactionEvent(eventInfo *events.EventInfo) error {
+	return p.container.EnqueueOnServerGoRoutine([]func(){func() { p.react(eventInfo) }})
+}
+
+// react runs the event-driven automations the event makes due. Runs on the server's goroutine.
+func (p *plugin) react(eventInfo *events.EventInfo) {
+	if p.stopping.Load() {
+		return
+	}
+
+	ran := p.reactions.Handle(eventInfo, p.now())
+	if len(ran) == 0 {
+		return
+	}
+
+	p.publish(p.now(), ran, true)
+}
+
 // evaluate runs what is due at now. Runs on the server's goroutine.
 func (p *plugin) evaluate(now time.Time) {
 	if p.stopping.Load() {
@@ -157,7 +208,15 @@ func (p *plugin) runNow(id string) (schedule.Event, error) {
 		return schedule.Event{}, errors.New("the server is stopping")
 	}
 
-	event, err := p.schedule.RunNow(id, p.now())
+	var event schedule.Event
+	var err error
+
+	if p.reactions.Has(id) {
+		event, err = p.reactions.RunNow(id, p.now())
+	} else {
+		event, err = p.schedule.RunNow(id, p.now())
+	}
+
 	if err != nil {
 		return schedule.Event{}, err
 	}
@@ -173,7 +232,15 @@ func (p *plugin) setPaused(id string, paused bool) error {
 		return errors.New("the server is stopping")
 	}
 
-	changed, err := p.schedule.SetPaused(id, paused)
+	var changed bool
+	var err error
+
+	if p.reactions.Has(id) {
+		changed, err = p.reactions.SetPaused(id, paused)
+	} else {
+		changed, err = p.schedule.SetPaused(id, paused)
+	}
+
 	if err != nil {
 		return err
 	}
@@ -207,6 +274,10 @@ func (p *plugin) rearm(id string) (bool, string, error) {
 		return false, "", errors.New("the server is stopping")
 	}
 
+	if p.reactions.Has(id) {
+		return false, "it is event-driven, so there is no time to run it again for", nil
+	}
+
 	now := p.now()
 
 	armed, why, err := p.schedule.Rearm(id, now)
@@ -225,11 +296,15 @@ func (p *plugin) rearm(id string) (bool, string, error) {
 // publish hands the plugin's goroutine a copy of how the schedule stands. Runs on the server's goroutine. The states
 // are handed over only when there is something new to keep.
 func (p *plugin) publish(now time.Time, events []schedule.Event, changed bool) {
-	statuses := p.schedule.Statuses(now)
+	statuses := append(p.schedule.Statuses(now), p.reactions.Statuses()...)
 
 	var states map[string]schedule.State
 	if changed {
 		states = p.schedule.States()
+
+		for id, state := range p.reactions.States() {
+			states[id] = state
+		}
 	}
 
 	err := p.container.EnqueueOnPluginGoRoutine(func() { p.apply(now, statuses, states, events) })
@@ -258,6 +333,12 @@ func (p *plugin) report(event schedule.Event) {
 	how := ""
 	if event.Manual {
 		how = " (by hand)"
+	}
+
+	if event.EventDriven {
+		p.reportReaction(event, how)
+
+		return
 	}
 
 	switch event.Outcome {
@@ -298,6 +379,28 @@ func (p *plugin) report(event schedule.Event) {
 	case schedule.OutcomeWaiting:
 		// Only a run by hand is reported: the waiting that is asked about every minute is not news.
 		fmt.Printf("%T %q%s is not ready: %s\n", p, event.Name, how, event.Message)
+	}
+}
+
+// reportReaction logs what happened to an event-driven automation, and raises an alert when it failed, since it will not be tried
+// again, and clears it when it next works.
+func (p *plugin) reportReaction(event schedule.Event, how string) {
+	switch event.Outcome {
+	case schedule.OutcomeSucceeded:
+		fmt.Printf("%T ran %q%s: %s\n", p, event.Name, how, event.Message)
+		p.clearAlert(event.ID)
+	case schedule.OutcomeFailed:
+		fmt.Printf("%T unable to run %q%s: %s\n", p, event.Name, how, event.Error)
+
+		// A person pressed a button and nothing happened. A run by hand is a person looking at the page, who sees it.
+		if !event.Manual {
+			p.alerting[event.ID] = true
+			p.sendAlert(alert.Raise(p.container, p.ShortName(), alertKey(event.ID), alert.SeverityWarning,
+				fmt.Sprintf("Automation failed: %s", event.Name),
+				fmt.Sprintf("It was run by an event, and failed: %s", event.Error)))
+		}
+	case schedule.OutcomeExpired:
+		fmt.Printf("%T %q%s was not run: %s\n", p, event.Name, how, event.Message)
 	}
 }
 
@@ -393,7 +496,8 @@ func (p *plugin) getAutomations() data.Automations {
 		item := viewOf(status)
 		result.Items[i] = item
 
-		if status.Outcome == schedule.OutcomeFailed && !status.Manual {
+		// Failing is those being tried again, and an event-driven automation is not: it shows its error on its card and has an alert.
+		if status.Outcome == schedule.OutcomeFailed && !status.Manual && !status.EventDriven {
 			result.Failing++
 		}
 	}
@@ -402,17 +506,24 @@ func (p *plugin) getAutomations() data.Automations {
 }
 
 func viewOf(s schedule.Status) data.Automation {
+	// An event-driven automation has none.
+	catchUp := ""
+	if !s.EventDriven {
+		catchUp = catchUpInWords(s.CatchUp)
+	}
+
 	return data.Automation{
 		ID:           s.ID,
 		Name:         s.Name,
 		Description:  s.Description,
 		Trigger:      s.Trigger,
-		CatchUp:      catchUpInWords(s.CatchUp),
+		CatchUp:      catchUp,
 		Next:         s.Next,
 		HasNext:      s.HasNext,
 		LastRun:      s.LastRun,
 		CanRearm:     s.CanRearm,
 		Paused:       s.Paused,
+		EventDriven:  s.EventDriven,
 		Outcome:      s.Outcome.String(),
 		OutcomeClass: outcomeClass(s.Outcome),
 		Manual:       s.Manual,

@@ -49,3 +49,27 @@ Each also has a "Pause" button. A paused automation is marked as paused on the p
 The times it is due while it is paused are dealt with as they come, so resuming it carries on from the next time it is
 due, and does not catch up on the ones it was paused through. "Run now" still works on a paused automation, and an
 alert about it not running is cleared when it is paused. Which are paused is kept across restarts.
+
+## Automations that wait for an event
+
+An automation can also be due when something happens, such as a button being pressed, instead of at a time (see
+`automation.EventAutomation`, and `automations.NewOnEvent` and `trigger.ButtonPressed` in `pmaas-automations`):
+
+```go
+conf.AddEvent(pmaasautomations.NewOnEvent("couch-lamp", "Turn on the couch lamp",
+	trigger.ButtonPressed(couchButton, device.PressSingle),
+	pmaasautomations.TurnOn(lamp)))
+```
+
+- **It runs at once.** The plugin listens for the events they wait for, and hands each to the server's goroutine as it arrives, in order,
+  so the automation runs within milliseconds, not at the next minute. Only events some automation is waiting for are handed
+  over; the rest never reach the plugin.
+- **No retry and no catch-up.** A press is wanted at the moment of the press, and it would be a surprise for the lamp to come on an hour
+  later because a plug was offline. A failed run raises a warning alert on the alert console at once (a run by hand, from the page, does not:
+  the person sees it), and the alert is cleared the next time it works.
+- **Conditions.** Wrapped in `When(...)`, a press does nothing unless the condition holds. The page then shows "condition not met" and the
+  reason, and there is no alert.
+- **On the page** it has the same card as the others, with "when the Couch button is single-clicked" for its trigger and no next time, catch-up or
+  re-enable. "Run now" runs it as if the event had come, and "Pause" stops events running it, which is kept across restarts. Events it misses while
+  paused are not made up for.
+- **The time automations are unchanged**, and an ID is unique across both kinds.

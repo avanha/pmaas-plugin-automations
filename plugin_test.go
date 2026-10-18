@@ -44,10 +44,14 @@ type fakeContainer struct {
 	predicate    events.EventPredicate
 	receiver     events.EventReceiver
 	deregistered []int
-	saved        []config.PersistentConfigV1
-	persisted    *config.PersistentConfigV1
-	broadcasts   []any
-	broadcastAt  []time.Time
+
+	// reactionPredicate and reactionReceiver are the registration for the events the event-driven automations wait for.
+	reactionPredicate events.EventPredicate
+	reactionReceiver  events.EventReceiver
+	saved             []config.PersistentConfigV1
+	persisted         *config.PersistentConfigV1
+	broadcasts        []any
+	broadcastAt       []time.Time
 
 	routes        map[string]*spi.HttpHandlerOptions
 	jsonRoutes    []string
@@ -125,6 +129,16 @@ func (c *fakeContainer) RegisterEntityRenderer(entityType reflect.Type, _ spi.En
 }
 
 func (c *fakeContainer) RegisterEventReceiver(predicate events.EventPredicate, receiver events.EventReceiver) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// The receiver of the events event-driven automations wait for is kept apart from the clock's.
+	if !predicate(&events.EventInfo{Event: clock.MinuteChangedEvent{}}) {
+		c.reactionPredicate, c.reactionReceiver = predicate, receiver
+
+		return 8, nil
+	}
+
 	c.predicate, c.receiver = predicate, receiver
 
 	return 7, nil

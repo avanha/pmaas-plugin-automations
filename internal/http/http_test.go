@@ -406,3 +406,42 @@ func TestPauseRequest(t *testing.T) {
 		}
 	})
 }
+
+func TestTemplate_AnEventDrivenOneSaysWhatItWaitsForAndHasNoNextTimeOrCatchUpOrReenable(t *testing.T) {
+	event := item("Couch lights")
+	event.EventDriven = true
+	event.Trigger = "when Couch button is single-clicked"
+	event.HasNext = false
+	event.CatchUp = ""
+
+	timed := item("Holiday lights on")
+
+	out := render(t, data.Automations{Items: []data.Automation{event, timed}})
+
+	for _, want := range []string{"when Couch button is single-clicked", `class="run-button" data-id="id-Couch lights"`, `class="pause-button" data-id="id-Couch lights"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+
+	// Next and Catches up belong to the timed one alone.
+	if got := strings.Count(out, `<span class="label">Next</span>`); got != 1 {
+		t.Errorf("%d Next lines, want 1:\n%s", got, out)
+	}
+
+	if got := strings.Count(out, `<span class="label">Catches up</span>`); got != 1 {
+		t.Errorf("%d Catches up lines, want 1:\n%s", got, out)
+	}
+
+	if strings.Contains(out, "not due in the next year") {
+		t.Errorf("an event-driven automation said it was not due:\n%s", out)
+	}
+
+	// Paused, it says it won't run.
+	event.Paused = true
+	paused := render(t, data.Automations{Items: []data.Automation{event}})
+
+	if !strings.Contains(paused, "paused, so it won't run") {
+		t.Errorf("a paused event-driven automation didn't say so:\n%s", paused)
+	}
+}

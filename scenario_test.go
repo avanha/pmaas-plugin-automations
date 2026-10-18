@@ -887,3 +887,134 @@ func TestGarageDoor_ARestartWhileTheAlertIsUpRaisesItAgainOnceAndTheDoorClosingS
 		f.stop()
 	})
 }
+
+// --- a button ---
+
+// testButton is a button whose events are from this ID.
+type testButton struct {
+	id   string
+	name string
+}
+
+func (b *testButton) GetButtonData() device.Button { return device.Button{Name: b.name} }
+func (b *testButton) EntityId() string             { return b.id }
+
+func TestButton_ASinglePressSwitchesOnTheLightsAndADoublePressDoesNot(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lamp := fake.NewSwitch("Lamp", device.SwitchStateOff)
+		button := &testButton{id: "bluetooth_7", name: "Couch button"}
+
+		conf := NewPluginConfig()
+		conf.AddEvent(pmaasautomations.NewOnEvent(
+			"couch-lamp", "Turn on the lamp when the couch button is pressed",
+			trigger.ButtonPressed(button, device.PressSingle),
+			pmaasautomations.TurnOn(lamp)))
+
+		f := startInBubble(t, &conf, nil)
+
+		press := func(id string, kind device.ButtonPress) {
+			f.t.Helper()
+
+			event := &events.EventInfo{Event: device.ButtonPressedEvent{EntityEvent: events.EntityEvent{Id: id}, Press: kind}}
+
+			f.container.mu.Lock()
+			predicate, receiver := f.container.reactionPredicate, f.container.reactionReceiver
+			f.container.mu.Unlock()
+
+			if predicate(event) {
+				if err := receiver(event); err != nil {
+					f.t.Fatal(err)
+				}
+			}
+
+			synctest.Wait()
+		}
+
+		// Another button, and another kind of press: the lamp stays off.
+		press("bluetooth_8", device.PressSingle)
+		press("bluetooth_7", device.PressDouble)
+
+		if got := lamp.GetSwitchData().State; got != device.SwitchStateOff || len(lamp.Commands()) != 0 {
+			t.Fatalf("the lamp is %v after presses that were not the one: %v", got, lamp.Commands())
+		}
+
+		// The press itself.
+		press("bluetooth_7", device.PressSingle)
+
+		if got := lamp.GetSwitchData().State; got != device.SwitchStateOn {
+			t.Errorf("the lamp is %v after the press", got)
+		}
+
+		// Again: nothing to do, since it is on, and it still counts as a success.
+		press("bluetooth_7", device.PressSingle)
+
+		if n := len(lamp.Commands()); n != 1 {
+			t.Errorf("%d commands sent to the lamp", n)
+		}
+
+		adapter := &automationStoreAdapter{parent: f.plugin}
+
+		shown, _ := adapter.GetAutomations()
+		if len(shown.Items) != 1 || shown.Items[0].Trigger != "when Couch button is single-clicked" || shown.Items[0].Outcome != "succeeded" {
+			t.Errorf("shown %+v", shown.Items)
+		}
+
+		f.stop()
+	})
+}
+
+func TestButton_APressThatHasAConditionDoesNothingUnlessItHolds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		lamp := fake.NewSwitch("Lamp", device.SwitchStateOff)
+		fan := fake.NewSwitch("Fan", device.SwitchStateOn)
+		button := &testButton{id: "bluetooth_7", name: "Couch button"}
+
+		conf := NewPluginConfig()
+		conf.AddEvent(pmaasautomations.NewOnEvent(
+			"couch-lamp", "Turn on the lamp if the fan is on",
+			trigger.ButtonPressed(button),
+			pmaasautomations.When(pmaasautomations.TurnOn(lamp), pmaasautomations.SwitchIs(fan, device.SwitchStateOn))))
+
+		f := startInBubble(t, &conf, nil)
+
+		press := func() {
+			event := &events.EventInfo{Event: device.ButtonPressedEvent{EntityEvent: events.EntityEvent{Id: "bluetooth_7"}, Press: device.PressLong}}
+
+			f.container.mu.Lock()
+			receiver := f.container.reactionReceiver
+			f.container.mu.Unlock()
+
+			if err := receiver(event); err != nil {
+				f.t.Fatal(err)
+			}
+
+			synctest.Wait()
+		}
+
+		fan.Report(device.SwitchStateOff)
+		press()
+
+		if len(lamp.Commands()) != 0 {
+			t.Fatal("the lamp was switched with the condition unmet")
+		}
+
+		adapter := &automationStoreAdapter{parent: f.plugin}
+
+		if shown, _ := adapter.GetAutomations(); shown.Items[0].Outcome != "condition not met" {
+			t.Errorf("outcome %q (%s)", shown.Items[0].Outcome, shown.Items[0].Message)
+		}
+
+		if raised, _ := f.container.alerts(); len(raised) != 0 {
+			t.Errorf("an alert for a condition: %+v", raised)
+		}
+
+		fan.Report(device.SwitchStateOn)
+		press()
+
+		if lamp.GetSwitchData().State != device.SwitchStateOn {
+			t.Error("the lamp was not switched with the condition met")
+		}
+
+		f.stop()
+	})
+}
