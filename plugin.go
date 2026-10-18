@@ -179,19 +179,25 @@ func (p *plugin) onClockEvent(eventInfo *events.EventInfo) error {
 // onReactionEvent is told of an event some event-driven automation is waiting for, on the plugin's goroutine, and hands it to the
 // server's, in the order they came.
 func (p *plugin) onReactionEvent(eventInfo *events.EventInfo) error {
-	return p.container.EnqueueOnServerGoRoutine([]func(){func() { p.react(eventInfo) }})
+	queued := time.Now()
+
+	return p.container.EnqueueOnServerGoRoutine([]func(){func() { p.react(eventInfo, queued) }})
 }
 
 // react runs the event-driven automations the event makes due. Runs on the server's goroutine.
-func (p *plugin) react(eventInfo *events.EventInfo) {
+func (p *plugin) react(eventInfo *events.EventInfo, queued time.Time) {
 	if p.stopping.Load() {
 		return
 	}
 
+	started := time.Now()
 	ran := p.reactions.Handle(eventInfo, p.now())
 	if len(ran) == 0 {
 		return
 	}
+
+	p.log.Debug("event-driven automations ran", "event", fmt.Sprintf("%T", eventInfo.Event), "automations", len(ran),
+		"waitedToRun", started.Sub(queued), "tookToRun", time.Since(started))
 
 	p.publish(p.now(), ran, true)
 }
