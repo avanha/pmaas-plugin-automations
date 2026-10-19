@@ -4,17 +4,16 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"github.com/avanha/pmaas-plugin-automations/data"
+	"github.com/avanha/pmaas-plugin-automations/internal/common"
+	"github.com/avanha/pmaas-spi"
+	"github.com/avanha/pmaas-spi/format"
 	"github.com/avanha/pmaas-spi/logging"
 	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
 	"reflect"
-	"time"
-
-	"github.com/avanha/pmaas-plugin-automations/data"
-	"github.com/avanha/pmaas-plugin-automations/internal/common"
-	"github.com/avanha/pmaas-spi"
 )
 
 //go:embed content/static content/templates
@@ -23,8 +22,8 @@ var contentFS embed.FS
 var automationsTemplate = spi.TemplateInfo{
 	Name: "automations_automations",
 	FuncMap: template.FuncMap{
-		"RelativeTime": relativeTime,
-		"UntilTime":    untilTime,
+		"RelativeTime": format.Ago,
+		"UntilTime":    format.Until,
 	},
 	Paths:   []string{"templates/automations_automations.htmlt"},
 	Styles:  []string{"css/automations_automations.css"},
@@ -201,44 +200,4 @@ func (h *Handler) automationsRendererFactory() (spi.EntityRenderer, error) {
 		Styles:              compiledTemplate.Styles,
 		Scripts:             compiledTemplate.Scripts,
 	}, nil
-}
-
-// relativeTime says how long ago a time was, in its two most significant units: "5m ago", "2h 5m ago",
-// "3d 4h ago". A time that is zero reads as "never".
-func relativeTime(t time.Time) string {
-	if t.IsZero() {
-		return "never"
-	}
-
-	return words(time.Since(t), "ago", "just now")
-}
-
-// untilTime says how long until a time, in the same way: "in 5m", "in 2h 5m", "in 3d 4h".
-func untilTime(t time.Time) string {
-	return words(time.Until(t), "", "now")
-}
-
-// words says how long a span is in its two most significant units, followed by suffix, or prefixed by "in" if there
-// is no suffix. A span of less than a minute, or less than nothing, reads as zero.
-func words(span time.Duration, suffix string, zero string) string {
-	span = span.Truncate(time.Minute)
-
-	var text string
-
-	switch {
-	case span <= 0:
-		return zero
-	case span < time.Hour:
-		text = fmt.Sprintf("%dm", int(span.Minutes()))
-	case span < 24*time.Hour:
-		text = fmt.Sprintf("%dh %dm", int(span.Hours()), int(span.Minutes())%60)
-	default:
-		text = fmt.Sprintf("%dd %dh", int(span.Hours())/24, int(span.Hours())%24)
-	}
-
-	if suffix == "" {
-		return "in " + text
-	}
-
-	return text + " " + suffix
 }

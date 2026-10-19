@@ -230,34 +230,6 @@ func TestRunRequest(t *testing.T) {
 	})
 }
 
-func TestWords(t *testing.T) {
-	for _, c := range []struct {
-		span   time.Duration
-		suffix string
-		want   string
-	}{
-		{30 * time.Second, "ago", "just now"},
-		{5*time.Minute + 20*time.Second, "ago", "5m ago"},
-		{2*time.Hour + 5*time.Minute, "ago", "2h 5m ago"},
-		{3*24*time.Hour + 4*time.Hour + time.Minute, "ago", "3d 4h ago"},
-		{5 * time.Minute, "", "in 5m"},
-		{25 * time.Hour, "", "in 1d 1h"},
-		{20 * time.Second, "", "just now"},
-	} {
-		if got := words(c.span, c.suffix, "just now"); got != c.want {
-			t.Errorf("%v %q: got %q, want %q", c.span, c.suffix, got, c.want)
-		}
-	}
-
-	if got := relativeTime(time.Time{}); got != "never" {
-		t.Errorf("a zero time: %q", got)
-	}
-
-	if got := untilTime(time.Now().Add(-time.Hour)); got != "now" {
-		t.Errorf("a time that has passed: %q", got)
-	}
-}
-
 func TestTemplate_WaitingShowsWhyAndOnlyAnAutomationThatCanBeReenabledGetsTheButton(t *testing.T) {
 	waiting := item("Fan")
 	waiting.Outcome, waiting.OutcomeClass, waiting.Message = "waiting", "waiting", "78.1°F is not below 75.0°F"
