@@ -51,7 +51,7 @@ func (h *Handler) Init(container spi.IPMAASContainer, store common.AutomationSto
 	container.AddRouteWithOptions(
 		"",
 		h.handleHttpListRequest,
-		&spi.HttpHandlerOptions{SupportsXsrfValidation: true, MenuLabel: "Automations"})
+		&spi.HttpHandlerOptions{SupportsXsrfValidation: true, MenuLabel: "Automations", MenuPriority: 80})
 	container.AddJsonRoute(
 		"run",
 		func() any { return &runRequest{} },
