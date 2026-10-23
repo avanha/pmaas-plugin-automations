@@ -26,6 +26,7 @@
     border-radius: 3px;
     padding: 6px 8px;
     margin: 0 0 8px 0;
+    word-wrap: break-word;
     overflow-wrap: anywhere;
 }
 
@@ -57,7 +58,6 @@
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
-    gap: 8px;
 }
 
 .entity-automations-automations .name {
@@ -134,4 +134,10 @@
     padding: 0 6px;
     border-radius: 3px;
     border: 1px solid #777777;
+}
+
+/* Spacing between the items of the flex container above, with margins and not `gap`: gap in a flex container needs Safari 14.1, and an old iPad
+   (iOS 9) draws the items touching without it. Each item has a margin on its right (the last one's is invisible). */
+.entity-automations-automations .automation-header > * {
+    margin: 0 8px 0 0;
 }

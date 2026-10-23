@@ -73,3 +73,9 @@ conf.AddEvent(pmaasautomations.NewOnEvent("couch-lamp", "Turn on the couch lamp"
   re-enable. "Run now" runs it as if the event had come, and "Pause" stops events running it, which is kept across restarts. Events it misses while
   paused are not made up for.
 - **The time automations are unchanged**, and an ID is unique across both kinds.
+
+## Old browsers
+
+The page is used on an iPad that stopped at iOS 9 (Safari 9), so `automations_automations.js` is plain ES5 with `XMLHttpRequest` (a script that uses an
+arrow function, a class field or `fetch` doesn't run there at all, and the buttons can't be clicked), and the stylesheet spaces items with margins,
+not `gap`, which needs Safari 14.1. Tests in `internal/http` (`oldbrowsers_test.go`, `js_test/`) look for what it doesn't have.
